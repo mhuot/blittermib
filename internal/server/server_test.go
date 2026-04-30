@@ -234,6 +234,38 @@ func TestWorkspaceRoute(t *testing.T) {
 	}
 }
 
+func TestAPITreeFragment(t *testing.T) {
+	ts := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/api/v1/tree/fragment?parent=1.3.6.1.2.1.2.2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	html := body(t, resp)
+	for _, want := range []string{
+		`class="tree-children"`,
+		`>ifIndex<`,
+		`>ifInOctets<`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("tree fragment missing %q", want)
+		}
+	}
+}
+
+func TestAPITreeFragmentMissingParent(t *testing.T) {
+	ts := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/api/v1/tree/fragment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (no parent param)", resp.StatusCode)
+	}
+}
+
 func TestSearchResultsLinkToWorkspace(t *testing.T) {
 	ts := newTestServer(t)
 	resp, err := http.Get(ts.URL + "/search?q=octets")

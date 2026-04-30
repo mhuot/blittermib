@@ -97,6 +97,18 @@ templ workspaceTree(rows []TreeRow) {
 	</ul>
 }
 
+// WorkspaceTreeFragment renders the children of an OID as a nested
+// `<ul>` of tree rows. The HTMX chevron in `treeRow` swaps this
+// into the parent row via `hx-swap="beforeend"` so expansion
+// progressively fills the existing tree.
+templ WorkspaceTreeFragment(rows []TreeRow) {
+	<ul class="tree-children" role="group">
+		for _, r := range rows {
+			@treeRow(r)
+		}
+	</ul>
+}
+
 templ treeRow(r TreeRow) {
 	<li class={ "tree-row " + FamilyClass(&r.Symbol) } role="treeitem">
 		if r.HasChildren {

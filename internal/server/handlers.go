@@ -464,6 +464,31 @@ func (s *Server) handleAPISearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"hits": hits})
 }
 
+// handleAPITreeFragment returns the immediate children of an OID
+// as an HTML <ul> fragment, suitable for HTMX `beforeend` swap into
+// the workspace tree row that triggered the expansion. The
+// JSON-returning sibling `handleAPITree` is preserved for the
+// standalone tree page.
+func (s *Server) handleAPITreeFragment(w http.ResponseWriter, r *http.Request) {
+	parent := strings.TrimSpace(r.URL.Query().Get("parent"))
+	if parent == "" {
+		s.notFound(w, r)
+		return
+	}
+	ctx := r.Context()
+	children, err := s.store.ListChildren(ctx, parent)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	rows := make([]web.TreeRow, 0, len(children))
+	for _, c := range children {
+		hc, _ := s.store.HasChildren(ctx, c.OID)
+		rows = append(rows, web.TreeRow{Symbol: c, HasChildren: hc})
+	}
+	render(w, r, http.StatusOK, web.WorkspaceTreeFragment(rows))
+}
+
 // handleAPITree returns the immediate children of an OID as JSON,
 // suitable for lazy-load expansion in the tree.js island.
 //
