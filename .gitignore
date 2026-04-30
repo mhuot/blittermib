@@ -41,3 +41,9 @@ coverage.html
 
 # Golden-test inspection output (written on mismatch by golden_test.go)
 **/testdata/golden/*.got.html
+
+# Embedded standard MIB bundle — populated by `make fetch-standard-mibs`.
+# Only the README.md placeholder is tracked (so go:embed always has
+# something to embed when the bundle is empty).
+internal/mibsbundle/bundle/*
+!internal/mibsbundle/bundle/README.md
