@@ -2,6 +2,7 @@
 _bmad-output/
 _bmad/
 openspec/
+.agents/
 .claude/
 .codex/
 .gemini/
