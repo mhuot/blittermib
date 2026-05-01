@@ -881,9 +881,9 @@ func workspaceList(view *WorkspaceView, rows []model.Symbol, selectedOID string)
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var37 templ.SafeURL
-			templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinURLErrs(workspaceSymbolURL(s.ModuleName, s.Name, s.OID))
+			templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinURLErrs(WorkspaceRowURL(view, &s))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/workspace.templ`, Line: 309, Col: 63}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/workspace.templ`, Line: 309, Col: 41}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 			if templ_7745c5c3_Err != nil {

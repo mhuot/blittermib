@@ -64,6 +64,77 @@ func WorkspaceSymbolURL(module, name, oid string) templ.SafeURL {
 	return workspaceSymbolURL(module, name, oid)
 }
 
+// KindHasChildren is the kind-based heuristic for "does clicking
+// this row drill INTO a subtree, or does it just select a leaf?"
+// Containers (table / table-entry / object-identity / module-
+// identity) drill in (scope change). Everything else is a leaf.
+//
+// The heuristic matches the SMI tree shape almost universally,
+// with the rare exception of an OBJECT-IDENTITY anchor that has
+// no children — clicking it would scope to itself and show an
+// empty list, which is harmless.
+func KindHasChildren(k model.SymbolKind) bool {
+	switch k {
+	case model.KindTable, model.KindTableEntry,
+		model.KindObjectIdentity, model.KindModuleIdentity:
+		return true
+	}
+	return false
+}
+
+// WorkspaceRowURL builds the URL for clicking a row in either the
+// workspace tree or the list pane. The two surfaces share the same
+// click semantic — keep the UI predictable — so they share this
+// builder.
+//
+// Behavior:
+//   - Container kinds (table, entry, object-identity, module-identity)
+//     navigate as a scope change: `/m/{name}/{oid}`. The list and
+//     breadcrumb both refocus on the new scope.
+//   - Leaf kinds (column, scalar, notification, etc.) preserve the
+//     current scope and ride in via the `sel=` query parameter:
+//     `/m/{name}/{currentScope}?sel={oid}`. The right pane updates
+//     while the list and breadcrumb stay put — matching the handoff
+//     workflow where clicking a column just swaps the detail pane.
+//   - When the workspace has no current scope (root view), even
+//     leaves are routed as scope changes, since "preserve nothing"
+//     reduces to "set scope to clicked".
+//   - Symbols with no OID (textual conventions, some object groups)
+//     can't slot into the OID-keyed scope path, so they ride in as
+//     `?sel={name}`. The handler distinguishes OID vs. name
+//     selectors by whether the value starts with a digit — SMI
+//     names must start with a letter per RFC 1212 §4.1.6 / RFC
+//     2578 §3.1, so the first-char check is unambiguous. This keeps
+//     TC clicks inside the workspace shell instead of bouncing the
+//     user to the canonical `/s/{module}::{name}` page (which loses
+//     the workspace chrome and the navigation context).
+func WorkspaceRowURL(view *WorkspaceView, s *model.Symbol) templ.SafeURL {
+	if s == nil {
+		return moduleURL(view.Module.Name)
+	}
+	if s.OID == "" {
+		if view != nil && view.ScopeOID != "" {
+			return templ.SafeURL("/m/" + view.Module.Name + "/" + view.ScopeOID + "?sel=" + s.Name)
+		}
+		return templ.SafeURL("/m/" + view.Module.Name + "?sel=" + s.Name)
+	}
+	if view != nil && view.ScopeOID != "" && !KindHasChildren(s.Kind) {
+		return templ.SafeURL("/m/" + view.Module.Name + "/" + view.ScopeOID + "?sel=" + s.OID)
+	}
+	return workspaceSymbolURL(s.ModuleName, s.Name, s.OID)
+}
+
+// SelectorLooksLikeOID reports whether the `sel=` query value is
+// an OID (digits + dots) rather than an SMI symbol name. SMI names
+// must start with a letter per RFC 1212 §4.1.6 / RFC 2578 §3.1, so
+// the first-char check is sufficient.
+func SelectorLooksLikeOID(s string) bool {
+	if s == "" {
+		return false
+	}
+	return s[0] >= '0' && s[0] <= '9'
+}
+
 // treeFragmentURL is the HTMX target that returns the children of
 // an OID rendered as workspace tree-rows.
 func treeFragmentURL(parentOID string) templ.SafeURL {

@@ -125,6 +125,21 @@ func (s *Server) handleModuleIndex(w http.ResponseWriter, r *http.Request) {
 // when oid is non-empty but doesn't match anything in the module
 // the workspace renders without a selection plus a soft missing-OID
 // notice.
+//
+// The `?sel=` query parameter splits SCOPE from SELECTION:
+//
+//   - The OID baked into the URL path is the SCOPE — it drives the
+//     list pane's symbol set and the scope breadcrumb.
+//   - `?sel=…` is the SELECTION — the symbol whose detail renders
+//     in the right pane. When omitted, the scope-OID auto-selects
+//     (matching the legacy single-OID behavior and keeping deep-
+//     links to `/m/{name}/{oid}` working unchanged).
+//
+// Splitting them lets the handoff's "click a column → right pane
+// updates, list stays put" workflow round-trip cleanly through
+// the URL: clicking a leaf row stays on `/m/{name}/{scope}` and
+// only updates `?sel`. See `web.WorkspaceRowURL` for the helper
+// that builds those leaf-vs-container URLs from the templates.
 func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request, name, oid string) {
 	ctx := r.Context()
 	mod, err := s.store.GetModule(ctx, name)
@@ -135,6 +150,13 @@ func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request, name, o
 	if err != nil {
 		s.internalError(w, r, err)
 		return
+	}
+
+	// SELECTION = `?sel=…` if provided, otherwise the path-OID auto-
+	// selects so `/m/{name}/{oid}` deep-links keep working.
+	selectionOID := r.URL.Query().Get("sel")
+	if selectionOID == "" {
+		selectionOID = oid
 	}
 
 	syms, err := s.store.ListSymbolsByModule(ctx, name)
@@ -218,13 +240,26 @@ func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request, name, o
 		ScopeOID: oid,
 	}
 
-	if oid != "" {
-		sym, err := s.store.GetSymbolByOID(ctx, oid)
+	if selectionOID != "" {
+		// `sel=` may be either an OID (digits + dots, the common
+		// case) or a symbol name (textual conventions and other
+		// no-OID symbols ride in by name). SMI names always start
+		// with a letter, so the first-char digit check is enough
+		// to disambiguate. Name-keyed lookups go through
+		// GetSymbol(module, name) so a TC click resolves to its
+		// row even when the path-OID slot is empty.
+		var sym *model.Symbol
+		var lookupErr error
+		if web.SelectorLooksLikeOID(selectionOID) {
+			sym, lookupErr = s.store.GetSymbolByOID(ctx, selectionOID)
+		} else {
+			sym, lookupErr = s.store.GetSymbol(ctx, name, selectionOID)
+		}
 		switch {
-		case errors.Is(err, store.ErrNotFound):
-			view.MissingOID = oid
-		case err != nil:
-			s.internalError(w, r, err)
+		case errors.Is(lookupErr, store.ErrNotFound):
+			view.MissingOID = selectionOID
+		case lookupErr != nil:
+			s.internalError(w, r, lookupErr)
 			return
 		default:
 			selected := &web.SymbolView{Symbol: sym}
@@ -245,12 +280,21 @@ func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request, name, o
 				}
 			}
 			view.Selected = selected
-			path, err := s.store.OIDPath(ctx, oid)
-			if err != nil {
-				s.internalError(w, r, err)
-				return
+			// OIDPath decodes the SELECTION path so the detail
+			// pane's "OID decode" section walks all the way down
+			// to the selected symbol; the scope breadcrumb is
+			// derived by `web.ScopeBreadcrumb` truncating that
+			// same path at `view.ScopeOID`. Skipped for symbols
+			// without an OID (textual conventions etc.) — the
+			// detail pane simply omits the OID-decode section.
+			if sym.OID != "" {
+				path, err := s.store.OIDPath(ctx, sym.OID)
+				if err != nil {
+					s.internalError(w, r, err)
+					return
+				}
+				view.OIDPath = path
 			}
-			view.OIDPath = path
 		}
 	}
 
