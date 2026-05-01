@@ -1782,10 +1782,69 @@ main.page:has(.workspace-grid) .content-inner,
   font-feature-settings: 'liga' 0, 'calt' 0;
   font-size: 12px;
 }
+/* Tree-children container — left padding makes room for the
+ * branch-line guides drawn by per-row ::before / ::after pseudos.
+ * `position: relative` is intentionally NOT set here; each row
+ * positions its own pseudos relative to the row, not the container,
+ * so an ancestor's guide line can extend past the row's box and
+ * span the entire descendant subtree. */
 .workspace-tree .tree-children-container {
   list-style: none;
   margin: 0;
-  padding-left: 14px;
+  padding-left: 16px;
+}
+
+/* Loading placeholder — visible only while htmx.ajax for the
+ * children-fragment is in flight; once `fetching` flips back to
+ * false, x-show hides this li but keeps it in the DOM. */
+.workspace-tree .tree-loading {
+  padding: 4px 4px 4px 4px;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* Branch-line guides — pure-CSS approximation of the design's
+ * ├── / └── tree glyphs. Each row gets:
+ *   1. ::before on `.tree-row-head` — the L-shape (vertical top
+ *      half + horizontal connector) drawn via 1px borders. The
+ *      L's elbow sits at the row's vertical center, where the
+ *      chevron / bullet sits.
+ *   2. ::after on `.tree-row` (non-last children only) — the
+ *      vertical CONTINUATION below the row's center, extending
+ *      through any descendants so the line passes by intermediate
+ *      generations. Suppressed on `:last-child` so the last
+ *      sibling renders as `└──` instead of `├──`.
+ *
+ * The 10px offset (left: -10px, width: 10px) places the guide
+ * line at column 6px inside the parent container's 16px padding,
+ * matching the chevron's visual axis once the row's own padding
+ * is accounted for. */
+.workspace-tree .tree-children-container > .tree-row {
+  position: relative;
+}
+.workspace-tree .tree-children-container > .tree-row > .tree-row-head::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 0;
+  width: 10px;
+  height: 12px;
+  border-left: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  pointer-events: none;
+}
+.workspace-tree .tree-children-container > .tree-row:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 12px;
+  bottom: 0;
+  width: 1px;
+  background: var(--line);
+  pointer-events: none;
 }
 /* Tree row container — block-level so the children-container
  * (rendered as a sibling `<ul>`) breaks to its own row underneath

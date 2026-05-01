@@ -298,6 +298,33 @@ func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request, name, o
 		}
 	}
 
+	// Auto-expand the tree spine from the module's top-level rows
+	// down to the current selection / scope. The user expects the
+	// tree to keep its navigation context across full-page
+	// navigations — clicking a column shouldn't collapse the
+	// entire tree.
+	//
+	// `expandSet` is the set of OIDs we want pre-expanded (named
+	// ancestors of the selection that have children); `selectionOID`
+	// is the row that should pick up the `selected` highlight.
+	expandSet := make(map[string]struct{})
+	for _, st := range view.OIDPath {
+		if st.Canonical || st.Name == "" {
+			continue
+		}
+		// Don't expand the selection itself when it's a leaf —
+		// there's nothing to drop into.
+		if st.Prefix == selectionOID && !web.KindHasChildren(st.Kind) {
+			continue
+		}
+		expandSet[st.Prefix] = struct{}{}
+	}
+	if len(expandSet) > 0 {
+		for i := range view.TreeRows {
+			s.expandTreeRow(ctx, &view.TreeRows[i], expandSet, selectionOID)
+		}
+	}
+
 	render(w, r, http.StatusOK, web.Workspace(view))
 }
 
@@ -561,11 +588,78 @@ func (s *Server) handleAPISearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"hits": hits})
 }
 
+// expandTreeRow recursively pre-loads and pre-expands a tree row's
+// children when its OID is in expandSet, so the workspace tree
+// renders with the path-to-selection already open. Walks the OID
+// tree top-down, so a node's children are populated only if the
+// node itself is on the auto-expand path.
+//
+// Selection highlighting is applied in the same pass: if the
+// row's OID matches selectionOID, the row gets `Selected = true`
+// (the templ adds the `selected` class for the accent stripe).
+//
+// The dedup logic mirrors handleAPITreeFragment — `ListChildren`
+// returns one row per defining module for shared anchors like
+// `mgmt` and `system`, so we collapse to one row per OID before
+// rendering.
+func (s *Server) expandTreeRow(ctx context.Context, row *web.TreeRow, expandSet map[string]struct{}, selectionOID string) {
+	if row.Symbol.OID == selectionOID {
+		row.Selected = true
+	}
+	if _, want := expandSet[row.Symbol.OID]; !want {
+		return
+	}
+	row.Expanded = true
+
+	children, err := s.store.ListChildren(ctx, row.Symbol.OID)
+	if err != nil || len(children) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(children))
+	deduped := children[:0]
+	for i := range children {
+		if _, ok := seen[children[i].OID]; ok {
+			continue
+		}
+		seen[children[i].OID] = struct{}{}
+		deduped = append(deduped, children[i])
+	}
+	children = deduped
+
+	parentOIDs := make([]string, 0, len(children))
+	for i := range children {
+		parentOIDs = append(parentOIDs, children[i].OID)
+	}
+	hasChildren, err := s.store.HasChildrenBatch(ctx, parentOIDs)
+	if err != nil {
+		return
+	}
+
+	row.PreloadedKids = make([]web.TreeRow, 0, len(children))
+	for i := range children {
+		kid := web.TreeRow{
+			Symbol:      children[i],
+			HasChildren: hasChildren[children[i].OID],
+		}
+		s.expandTreeRow(ctx, &kid, expandSet, selectionOID)
+		row.PreloadedKids = append(row.PreloadedKids, kid)
+	}
+}
+
 // handleAPITreeFragment returns the immediate children of an OID
 // as an HTML <ul> fragment, suitable for HTMX `beforeend` swap into
 // the workspace tree row that triggered the expansion. The
 // JSON-returning sibling `handleAPITree` is preserved for the
 // standalone tree page.
+//
+// `ListChildren` returns one row per module defining the OID, so
+// shared anchors like `mgmt` / `system` / `interfaces` (defined in
+// RFC1155 + RFC1156 + RFC1213 etc.) come back duplicated. The
+// workspace tree is a navigation surface keyed by OID, not by
+// (module, name), so we dedupe to one row per OID before render.
+// Order is preserved from the SQL `ORDER BY oid, name` so the
+// retained row is the alphabetically-first module's definition —
+// stable across requests and across reloads.
 func (s *Server) handleAPITreeFragment(w http.ResponseWriter, r *http.Request) {
 	parent := strings.TrimSpace(r.URL.Query().Get("parent"))
 	if parent == "" {
@@ -578,6 +672,16 @@ func (s *Server) handleAPITreeFragment(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	seen := make(map[string]struct{}, len(children))
+	deduped := children[:0]
+	for i := range children {
+		if _, ok := seen[children[i].OID]; ok {
+			continue
+		}
+		seen[children[i].OID] = struct{}{}
+		deduped = append(deduped, children[i])
+	}
+	children = deduped
 	parentOIDs := make([]string, 0, len(children))
 	for i := range children {
 		parentOIDs = append(parentOIDs, children[i].OID)

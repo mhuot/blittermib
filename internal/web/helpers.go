@@ -538,13 +538,36 @@ type TableColumn struct {
 	IsIndex  bool
 }
 
-// TreeRow is one node in the workspace's left-rail OID tree. The
-// initial paint includes only the module's top-level OID children;
-// HasChildren drives whether a chevron renders so the user can
+// TreeRow is one node in the workspace's left-rail OID tree.
+//
+// `HasChildren` drives whether a chevron renders so the user can
 // drill in via lazy HTMX-fragment expansion.
+//
+// `Expanded`, `Selected`, and `PreloadedKids` are populated by the
+// workspace handler's auto-expand pass when a selection or scope
+// is set. Rows on the path from the module's top-level entry
+// down to the selection are marked Expanded=true with their
+// children threaded into PreloadedKids — that way the tree
+// preserves navigation context across full-page navigations
+// without needing client-side state. The row matching the
+// current selection picks up Selected=true for the accent
+// highlight.
 type TreeRow struct {
-	Symbol      model.Symbol
-	HasChildren bool
+	Symbol        model.Symbol
+	HasChildren   bool
+	Expanded      bool
+	Selected      bool
+	PreloadedKids []TreeRow
+}
+
+// TreeRowAlpineState renders the `x-data` initial-state JSON for a
+// tree row, baking the server-decided `expanded` / `loaded` values
+// into the markup so the row paints in the right state on first
+// render. When `expanded` is true, `loaded` is also true so the
+// chevron's click handler treats it as already-fetched and
+// just toggles visibility — no duplicate fragment fetch.
+func TreeRowAlpineState(expanded bool) string {
+	return fmt.Sprintf(`{ expanded: %t, loaded: %t, fetching: false }`, expanded, expanded)
 }
 
 // WorkspaceView aggregates everything the workspace shell needs for

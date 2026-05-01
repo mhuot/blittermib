@@ -165,18 +165,18 @@ templ WorkspaceTreeFragment(rows []TreeRow) {
 // heavy SMI names.
 templ treeRow(r TreeRow) {
 	if r.HasChildren {
-		<li class={ "tree-row " + FamilyClass(&r.Symbol) } role="treeitem"
+		<li class={ "tree-row " + FamilyClass(&r.Symbol), templ.KV("selected", r.Selected) } role="treeitem"
 			data-name={ r.Symbol.Name }
 			data-oid={ r.Symbol.OID }
-			x-data="{ expanded: false, loaded: false, fetching: false }"
+			x-data={ TreeRowAlpineState(r.Expanded) }
 			x-on:tree:expand-all.window="if (!loaded && !fetching) { fetching = true; expanded = true; htmx.ajax('GET', $el.dataset.fragmentUrl || $el.querySelector('.tree-chevron').dataset.fragmentUrl, { target: $el.querySelector(':scope > .tree-children-container'), swap: 'beforeend' }).then(() => { loaded = true; fetching = false; }, () => { fetching = false; expanded = false; }); } else if (loaded) { expanded = true; }"
 			x-on:tree:collapse-all.window="expanded = false">
 			<div class="tree-row-head">
 				<button type="button"
-					class="tree-chevron"
+					class={ "tree-chevron", templ.KV("expanded", r.Expanded) }
 					x-bind:class="{ expanded: expanded }"
 					x-bind:aria-expanded="expanded"
-					aria-expanded="false"
+					aria-expanded={ fmt.Sprintf("%t", r.Expanded) }
 					data-fragment-url={ string(treeFragmentURL(r.Symbol.OID)) }
 					x-on:click.stop="if (loaded) { expanded = !expanded; } else if (!fetching) { fetching = true; expanded = true; htmx.ajax('GET', $el.dataset.fragmentUrl, { target: $el.closest('.tree-row').querySelector(':scope > .tree-children-container'), swap: 'beforeend' }).then(() => { loaded = true; fetching = false; }, () => { fetching = false; expanded = false; }); }"
 					aria-label="Expand">▸</button>
@@ -186,10 +186,15 @@ templ treeRow(r TreeRow) {
 					</code>
 				</a>
 			</div>
-			<ul class="tree-children-container" role="group" x-show="expanded" x-cloak></ul>
+			<ul class="tree-children-container" role="group" x-show="expanded" x-cloak>
+				<li class="tree-loading" x-show="fetching" x-cloak>loading…</li>
+				for _, kid := range r.PreloadedKids {
+					@treeRow(kid)
+				}
+			</ul>
 		</li>
 	} else {
-		<li class={ "tree-row " + FamilyClass(&r.Symbol) } role="treeitem"
+		<li class={ "tree-row " + FamilyClass(&r.Symbol), templ.KV("selected", r.Selected) } role="treeitem"
 			data-name={ r.Symbol.Name }
 			data-oid={ r.Symbol.OID }>
 			<div class="tree-row-head">
