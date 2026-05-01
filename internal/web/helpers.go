@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"fmt"
 	"html"
 	"strconv"
@@ -79,6 +80,130 @@ func stepDisplayName(s model.OIDStep) string {
 	return lastSegment(s.Prefix)
 }
 
+// selectedOID returns the OID of the workspace view's currently
+// selected symbol, or "" when nothing is selected. Threaded into
+// the list pane so the matching row can carry a `selected` class
+// for the design's tinted-background highlight.
+func selectedOID(v *WorkspaceView) string {
+	if v == nil || v.Selected == nil || v.Selected.Symbol == nil {
+		return ""
+	}
+	return v.Selected.Symbol.OID
+}
+
+// BreadcrumbStep is one segment in the workspace's scope-path
+// breadcrumb above the list-pane column header. The chain reads
+// `axMgmt / axSystem / axSysCpu / axSysCpuTable` per the handoff
+// design — each segment is a clickable link that scopes the list
+// to that level, and the trailing entry (the current scope) is
+// marked IsLast for the accent styling.
+type BreadcrumbStep struct {
+	Name   string
+	OID    string
+	Module string
+	IsLast bool
+}
+
+// ScopeBreadcrumb returns the named SMI symbols on the path from
+// the module's root down to the current scope, suitable for
+// rendering as the breadcrumb chain above the list pane's column
+// header. Canonical-table entries (iso/org/dod/internet/private/
+// enterprises/…) are filtered out — they're context-free noise
+// for a workspace already pinned to a specific module.
+//
+// `view.OIDPath` is the decoded path of the SELECTED symbol, which
+// can extend past the SCOPE when the user is selecting a leaf
+// inside a scoped subtree (e.g. clicking a column inside a table:
+// scope = table, selection = column). The chain is therefore
+// truncated at `view.ScopeOID` so the breadcrumb terminates at the
+// scope, not the selection.
+//
+// Returns nil when there's no scope or when the resolved path has
+// no named entries, which suppresses the breadcrumb strip in the
+// templ entirely so unscoped views render flush.
+func ScopeBreadcrumb(v *WorkspaceView) []BreadcrumbStep {
+	if v == nil || v.ScopeOID == "" || len(v.OIDPath) == 0 {
+		return nil
+	}
+	var out []BreadcrumbStep
+	for _, st := range v.OIDPath {
+		if st.Canonical || st.Name == "" {
+			if st.Prefix == v.ScopeOID {
+				break
+			}
+			continue
+		}
+		out = append(out, BreadcrumbStep{
+			Name:   st.Name,
+			OID:    st.Prefix,
+			Module: st.Module,
+		})
+		if st.Prefix == v.ScopeOID {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	out[len(out)-1].IsLast = true
+	return out
+}
+
+// SplitOIDLast splits an OID into its prefix (everything up to and
+// including the final dot) and its last numeric segment. Examples:
+//   - "1.3.6.1.4.1.22610.2.4.1.1.1" → ("1.3.6.1.4.1.22610.2.4.1.1.", "1")
+//   - "1.3"                          → ("1.",                          "3")
+//   - "42"                           → ("",                             "42")
+//   - ""                             → ("", "")
+//
+// Used by the workspace list pane's OID column to render the
+// prefix in muted color and the last segment bold/bright per the
+// handoff design ("highlighted index indicator").
+func SplitOIDLast(oid string) (prefix, last string) {
+	if oid == "" {
+		return "", ""
+	}
+	i := strings.LastIndex(oid, ".")
+	if i < 0 {
+		return "", oid
+	}
+	return oid[:i+1], oid[i+1:]
+}
+
+// pickerModule is the trimmed shape embedded as a JSON script for
+// Alpine to consume in the module-picker overlay. It deliberately
+// drops fields the picker doesn't render (Description, Imports,
+// etc.) so the inline JSON stays small even on a 1k-module bundle.
+type pickerModule struct {
+	Name string `json:"name"`
+	OID  string `json:"oid,omitempty"`
+}
+
+// PickerModulesJSON returns a JSON-encoded slice of {name, oid}
+// objects for embedding in the module-picker overlay's hidden
+// `<script type="application/json">` payload. Errors are rare
+// (json.Marshal on a slice of plain strings) and would surface
+// only as an empty list — the picker's empty-state message
+// handles that case gracefully.
+//
+// The returned value is safe to embed inside `<script
+// type="application/json">…</script>` because JSON's strict
+// semantics guarantee no `</script>` substring can appear in
+// well-formed output (the only way it could is via a string
+// literal, and json.Marshal escapes `<` as `<` when the
+// encoder's HTMLEscape mode is on, which is the package default).
+func PickerModulesJSON(mods []model.Module) string {
+	out := make([]pickerModule, 0, len(mods))
+	for _, m := range mods {
+		out = append(out, pickerModule{Name: m.Name, OID: m.OIDRoot})
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
 // lastSegment returns the final dotted segment of an OID, or the
 // full string when there's no dot.
 func lastSegment(oid string) string {
@@ -149,6 +274,152 @@ func FamilyClass(s *model.Symbol) string {
 		return "t-struct"
 	}
 	return model.TypeFamily(s.Kind, s.Syntax, false)
+}
+
+// TypeLetter returns the single-character glyph that appears in the
+// type-letter badge in the workspace list pane: C/G/I/S/X/T/A/B/N
+// for the nine SMI type families, or `·` (U+00B7) for the structural
+// fallback. Mirrors the family taxonomy in `model.TypeFamily` so the
+// glyph and the family CSS class are always derived from the same
+// source.
+func TypeLetter(s *model.Symbol) string {
+	switch FamilyClass(s) {
+	case "t-counter":
+		return "C"
+	case "t-gauge":
+		return "G"
+	case "t-int":
+		return "I"
+	case "t-text":
+		return "S"
+	case "t-index":
+		return "X"
+	case "t-time":
+		return "T"
+	case "t-addr":
+		return "A"
+	case "t-bool":
+		return "B"
+	case "t-notif":
+		return "N"
+	}
+	return "·"
+}
+
+// AccessClass returns the abbreviated CSS class used in the
+// workspace list-pane access column: "ro" (read-only / cyan), "rw"
+// (read-write / read-create / amber), or "na" (not-accessible /
+// accessible-for-notify / muted). The empty-string case is treated
+// as "na" so SMIv1 imports without a MAX-ACCESS clause still get a
+// neutral pill rather than a missing column.
+func AccessClass(a model.Access) string {
+	switch a {
+	case model.AccessReadOnly:
+		return "ro"
+	case model.AccessReadWrite, model.AccessReadCreate:
+		return "rw"
+	}
+	return "na"
+}
+
+// AccessLabel returns the short label rendered next to AccessClass:
+// "ro", "rw", "na", "n/a", or empty when no MAX-ACCESS applies.
+// Kept separate from AccessClass so future refinements (e.g. an
+// "n/a" label for `accessible-for-notify` while keeping the same
+// muted color class) don't have to fight a single overloaded
+// helper.
+func AccessLabel(a model.Access) string {
+	switch a {
+	case model.AccessReadOnly:
+		return "ro"
+	case model.AccessReadWrite, model.AccessReadCreate:
+		return "rw"
+	case model.AccessNotAccessible, model.AccessAccessibleNotify:
+		return "na"
+	}
+	return ""
+}
+
+// SplitCamelPrefix returns the (lowercase camelCase prefix, rest)
+// pair for an SMI symbol name so the renderer can dim the boring
+// shared prefix and emphasize the distinguishing tail. Examples:
+//   - "axSysCpu"   → ("ax",  "SysCpu")
+//   - "ifInOctets" → ("if",  "InOctets")
+//   - "interfaces" → ("",    "interfaces")  (no uppercase → no split)
+//   - "TruthValue" → ("",    "TruthValue")  (starts uppercase)
+//
+// The split is at the first uppercase rune. The empty-prefix cases
+// signal "render the whole name as bright tail with no dimmed
+// prefix", which the templ uses to skip the wrapping `<span class="pre">`.
+func SplitCamelPrefix(name string) (prefix, tail string) {
+	for i, r := range name {
+		if r >= 'A' && r <= 'Z' {
+			if i == 0 {
+				return "", name
+			}
+			return name[:i], name[i:]
+		}
+	}
+	return "", name
+}
+
+// SplitNameHTML renders a symbol name as `<span class="pre">…</span><span class="tail">…</span>`
+// with NO whitespace between the two spans. Built in Go (rather than
+// composed in `templ`) because templ preserves source whitespace
+// across an `if pre != ""` block, and that inter-element whitespace
+// gets rendered as a visible space in inline contexts — so
+// `axSysCpu` would read as `ax SysCpu`. Returning a single
+// pre-built HTML string sidesteps that.
+//
+// Returned string is safe to render via templ.Raw.
+func SplitNameHTML(name string) string {
+	pre, tail := SplitCamelPrefix(name)
+	var b strings.Builder
+	b.Grow(len(name) + 48)
+	if pre != "" {
+		b.WriteString(`<span class="pre">`)
+		b.WriteString(html.EscapeString(pre))
+		b.WriteString(`</span>`)
+	}
+	b.WriteString(`<span class="tail">`)
+	b.WriteString(html.EscapeString(tail))
+	b.WriteString(`</span>`)
+	return b.String()
+}
+
+// KindLabel returns the human-readable label for a SymbolKind, used
+// in the workspace detail pane's "● COLUMN" header. Default is the
+// kind string itself; KindObjectType-derived values (scalar, table,
+// table-entry, column) and special kinds get spelled out for the
+// reader instead of the SMI shorthand.
+func KindLabel(k model.SymbolKind) string {
+	switch k {
+	case model.KindScalar:
+		return "scalar"
+	case model.KindTable:
+		return "table"
+	case model.KindTableEntry:
+		return "table entry"
+	case model.KindColumn:
+		return "column"
+	case model.KindTextualConvention:
+		return "textual convention"
+	case model.KindObjectIdentity:
+		return "object identity"
+	case model.KindNotificationType:
+		return "notification"
+	case model.KindTrapType:
+		return "trap"
+	case model.KindModuleIdentity:
+		return "module"
+	case model.KindObjectGroup:
+		return "object group"
+	case model.KindNotificationGroup:
+		return "notification group"
+	case model.KindModuleCompliance:
+		return "module compliance"
+	}
+	return string(k)
 }
 
 // fmtLine renders a line number for diagnostics templates without

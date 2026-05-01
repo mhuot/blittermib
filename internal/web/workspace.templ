@@ -19,7 +19,7 @@ templ Workspace(view *WorkspaceView) {
 				@workspaceTree(view.TreeRows)
 			</aside>
 			<section class="workspace-list">
-				@workspaceList(view.ListRows, view.Module.Name, view.ScopeOID)
+				@workspaceList(view, view.ListRows, selectedOID(view))
 			</section>
 			<section class="workspace-detail">
 				@workspaceDetail(view)
@@ -54,6 +54,11 @@ templ workspaceStatusBar(view *WorkspaceView) {
 // counts are omitted to keep the bar tight; when every family is
 // zero, a single muted "empty module" pill renders so the surface
 // signals "loaded, just empty" instead of disappearing chips.
+//
+// Each chip carries the family class on its outer span; CSS paints
+// the leading number in the family color and the trailing label in
+// the muted `--fg-3`, matching the handoff's `<n> objects` /
+// `<n> counters` typography.
 templ statusBarCounts(c *model.FamilyCounts) {
 	if c != nil {
 		<div class="status-bar-counts">
@@ -61,41 +66,67 @@ templ statusBarCounts(c *model.FamilyCounts) {
 				<span class="status-count empty">empty module</span>
 			} else {
 				if c.Structs > 0 {
-					<span class="status-count t-struct">{ fmt.Sprintf("%d objects", c.Structs) }</span>
+					@statusCount("t-struct", c.Structs, "objects")
 				}
 				if c.Counters > 0 {
-					<span class="status-count t-counter">{ fmt.Sprintf("%d counters", c.Counters) }</span>
+					@statusCount("t-counter", c.Counters, "counters")
 				}
 				if c.Gauges > 0 {
-					<span class="status-count t-gauge">{ fmt.Sprintf("%d gauges", c.Gauges) }</span>
+					@statusCount("t-gauge", c.Gauges, "gauges")
 				}
 				if c.Ints > 0 {
-					<span class="status-count t-int">{ fmt.Sprintf("%d integers", c.Ints) }</span>
+					@statusCount("t-int", c.Ints, "integers")
 				}
 				if c.Texts > 0 {
-					<span class="status-count t-text">{ fmt.Sprintf("%d strings", c.Texts) }</span>
+					@statusCount("t-text", c.Texts, "strings")
 				}
 				if c.Times > 0 {
-					<span class="status-count t-time">{ fmt.Sprintf("%d times", c.Times) }</span>
+					@statusCount("t-time", c.Times, "times")
 				}
 				if c.Addrs > 0 {
-					<span class="status-count t-addr">{ fmt.Sprintf("%d addrs", c.Addrs) }</span>
+					@statusCount("t-addr", c.Addrs, "addrs")
 				}
 				if c.Bools > 0 {
-					<span class="status-count t-bool">{ fmt.Sprintf("%d bools", c.Bools) }</span>
+					@statusCount("t-bool", c.Bools, "bools")
 				}
 				if c.Notifs > 0 {
-					<span class="status-count t-notif">{ fmt.Sprintf("%d notifs", c.Notifs) }</span>
+					@statusCount("t-notif", c.Notifs, "notifs")
 				}
 			}
 		</div>
 	}
 }
 
+// statusCount renders one family-colored count entry: <strong>n</strong>
+// label. The outer span carries the t-… family class so the CSS
+// rule paints the bold number in the family color while leaving
+// the label muted.
+templ statusCount(family string, n int, label string) {
+	<span class={ "status-count " + family }>
+		<strong>{ fmt.Sprintf("%d", n) }</strong>
+		<span class="lbl">{ label }</span>
+	</span>
+}
+
 // workspaceTree renders the top-level OID children of the active
 // module. Rows with descendants get an HTMX-driven chevron that
 // fetches the children fragment from /api/v1/tree/fragment.
+//
+// The "TREE" header band sits above the tree itself with collapse-
+// all / expand-all affordances. Both buttons are wired via
+// `tree:expand-all` / `tree:collapse-all` Alpine events that the
+// row's x-data scope listens to so future expansion work plays
+// nicely with already-rendered subtrees.
 templ workspaceTree(rows []TreeRow) {
+	<div class="tree-head">
+		<span class="tree-head-title">TREE</span>
+		<button type="button" class="tree-head-btn"
+			x-on:click="$dispatch('tree:expand-all')"
+			aria-label="Expand all">+</button>
+		<button type="button" class="tree-head-btn"
+			x-on:click="$dispatch('tree:collapse-all')"
+			aria-label="Collapse all">−</button>
+	</div>
 	<ul class="tree-list" role="tree">
 		for _, r := range rows {
 			@treeRow(r)
@@ -120,35 +151,55 @@ templ WorkspaceTreeFragment(rows []TreeRow) {
 //
 // Rows with descendants carry an Alpine `{ expanded, loaded }`
 // scope. Clicking the chevron toggles `expanded` (which drives
-// `aria-expanded` and a CSS rotation via the `.expanded` class on
-// the chevron) and, on the first expand only, fires an HTMX GET
-// for the children fragment into the empty
+// `aria-expanded` and the chevron glyph between `▸` (collapsed)
+// and `▾` (expanded)) and, on the first expand only, fires an
+// HTMX GET for the children fragment into the empty
 // `<ul class="tree-children-container">` already rendered inside
 // the row. Subsequent toggles just show/hide the loaded children
-// — no re-fetch.
+// — no re-fetch. Leaf rows render a `·` glyph in place of the
+// chevron so every row's leading column stays aligned.
+//
+// The symbol name is split into a dimmed lowercase camelCase
+// prefix (e.g. `ax`) and a brighter PascalCase tail (`SysCpu`) so
+// the eye lands on the distinguishing portion of long, prefix-
+// heavy SMI names.
 templ treeRow(r TreeRow) {
 	if r.HasChildren {
 		<li class={ "tree-row " + FamilyClass(&r.Symbol) } role="treeitem"
-			x-data="{ expanded: false, loaded: false, fetching: false }">
-			<button type="button"
-				x-bind:class="expanded ? 'tree-chevron expanded' : 'tree-chevron'"
-				x-bind:aria-expanded="expanded"
-				data-fragment-url={ string(treeFragmentURL(r.Symbol.OID)) }
-				x-on:click="if (loaded) { expanded = !expanded; } else if (!fetching) { fetching = true; expanded = true; htmx.ajax('GET', $el.dataset.fragmentUrl, { target: $el.closest('.tree-row').querySelector('.tree-children-container'), swap: 'beforeend' }).then(() => { loaded = true; fetching = false; }, () => { fetching = false; expanded = false; }); }"
-				aria-label="Expand">›</button>
-			<a class="tree-row-link" href={ workspaceURL(r.Symbol.ModuleName, r.Symbol.OID) }>
-				<code class="tree-row-name">{ r.Symbol.Name }</code>
-				<span class="tree-row-oid">{ r.Symbol.OID }</span>
-			</a>
-			<ul class="tree-children-container" role="group" x-show="expanded"></ul>
+			data-name={ r.Symbol.Name }
+			data-oid={ r.Symbol.OID }
+			x-data="{ expanded: false, loaded: false, fetching: false }"
+			x-on:tree:expand-all.window="if (!loaded && !fetching) { fetching = true; expanded = true; htmx.ajax('GET', $el.dataset.fragmentUrl || $el.querySelector('.tree-chevron').dataset.fragmentUrl, { target: $el.querySelector(':scope > .tree-children-container'), swap: 'beforeend' }).then(() => { loaded = true; fetching = false; }, () => { fetching = false; expanded = false; }); } else if (loaded) { expanded = true; }"
+			x-on:tree:collapse-all.window="expanded = false">
+			<div class="tree-row-head">
+				<button type="button"
+					class="tree-chevron"
+					x-bind:class="{ expanded: expanded }"
+					x-bind:aria-expanded="expanded"
+					aria-expanded="false"
+					data-fragment-url={ string(treeFragmentURL(r.Symbol.OID)) }
+					x-on:click.stop="if (loaded) { expanded = !expanded; } else if (!fetching) { fetching = true; expanded = true; htmx.ajax('GET', $el.dataset.fragmentUrl, { target: $el.closest('.tree-row').querySelector(':scope > .tree-children-container'), swap: 'beforeend' }).then(() => { loaded = true; fetching = false; }, () => { fetching = false; expanded = false; }); }"
+					aria-label="Expand">▸</button>
+				<a class="tree-row-link" href={ workspaceURL(r.Symbol.ModuleName, r.Symbol.OID) }>
+					<code class="tree-row-name">
+						@templ.Raw(SplitNameHTML(r.Symbol.Name))
+					</code>
+				</a>
+			</div>
+			<ul class="tree-children-container" role="group" x-show="expanded" x-cloak></ul>
 		</li>
 	} else {
-		<li class={ "tree-row " + FamilyClass(&r.Symbol) } role="treeitem">
-			<span class="tree-chevron-spacer" aria-hidden="true"></span>
-			<a class="tree-row-link" href={ workspaceURL(r.Symbol.ModuleName, r.Symbol.OID) }>
-				<code class="tree-row-name">{ r.Symbol.Name }</code>
-				<span class="tree-row-oid">{ r.Symbol.OID }</span>
-			</a>
+		<li class={ "tree-row " + FamilyClass(&r.Symbol) } role="treeitem"
+			data-name={ r.Symbol.Name }
+			data-oid={ r.Symbol.OID }>
+			<div class="tree-row-head">
+				<span class="tree-leaf-bullet" aria-hidden="true">·</span>
+				<a class="tree-row-link" href={ workspaceURL(r.Symbol.ModuleName, r.Symbol.OID) }>
+					<code class="tree-row-name">
+						@templ.Raw(SplitNameHTML(r.Symbol.Name))
+					</code>
+				</a>
+			</div>
 		</li>
 	}
 }
@@ -159,49 +210,118 @@ templ treeRow(r TreeRow) {
 // a scope, the list is server-narrowed to symbols at or under the
 // selected OID and a "View all in module" link surfaces in the
 // chrome.
-templ workspaceList(rows []model.Symbol, module, scopeOID string) {
+//
+// Each row carries the design's `ls -l`-style 5-column anatomy:
+// type-letter badge · name (mono) · syntax (family-colored) · access
+// (ro/rw/na) · OID (tabular-nums, last segment in accent). The
+// 5-col grid lives in CSS via `display: contents` on `<thead>` /
+// `<tbody>` / `<tr>` so semantic table markup survives without
+// breaking the column-aligned layout.
+templ workspaceList(view *WorkspaceView, rows []model.Symbol, selectedOID string) {
+	{{ module := view.Module.Name }}
+	{{ scopeOID := view.ScopeOID }}
+	{{ crumbs := ScopeBreadcrumb(view) }}
 	<div class="list-controls">
+		<label class="list-search">
+			<span class="prompt" aria-hidden="true">›</span>
+			<input type="search"
+				class="list-filter"
+				placeholder="grep name | oid | desc …"
+				x-model="filter"
+				autocomplete="off"
+				aria-label="Filter symbols"/>
+			<span class="kbd" aria-hidden="true">⌘K</span>
+		</label>
 		<div class="kind-chips" role="tablist" aria-label="Filter by kind">
-			<button type="button" class="kind-chip" role="tab"
+			<button type="button" class="kind-chip kind-all" role="tab"
+				data-kind-active="true"
+				aria-selected="true"
 				x-on:click="kindFilter = 'all'"
 				x-bind:aria-selected="kindFilter === 'all'"
-				x-bind:data-kind-active="kindFilter === 'all'">All</button>
-			<button type="button" class="kind-chip" role="tab"
+				x-bind:data-kind-active="kindFilter === 'all'">all</button>
+			<button type="button" class="kind-chip kind-scalar" role="tab"
+				data-kind-active="false"
+				aria-selected="false"
 				x-on:click="kindFilter = 'scalar'"
 				x-bind:aria-selected="kindFilter === 'scalar'"
-				x-bind:data-kind-active="kindFilter === 'scalar'">Scalars</button>
-			<button type="button" class="kind-chip" role="tab"
+				x-bind:data-kind-active="kindFilter === 'scalar'">
+				<span class="dot" aria-hidden="true"></span>scalars
+			</button>
+			<button type="button" class="kind-chip kind-table" role="tab"
+				data-kind-active="false"
+				aria-selected="false"
 				x-on:click="kindFilter = 'table'"
 				x-bind:aria-selected="kindFilter === 'table'"
-				x-bind:data-kind-active="kindFilter === 'table'">Tables</button>
-			<button type="button" class="kind-chip" role="tab"
+				x-bind:data-kind-active="kindFilter === 'table'">
+				<span class="dot" aria-hidden="true"></span>tables
+			</button>
+			<button type="button" class="kind-chip kind-notif" role="tab"
+				data-kind-active="false"
+				aria-selected="false"
 				x-on:click="kindFilter = 'notif'"
 				x-bind:aria-selected="kindFilter === 'notif'"
-				x-bind:data-kind-active="kindFilter === 'notif'">Notifs</button>
+				x-bind:data-kind-active="kindFilter === 'notif'">
+				<span class="dot" aria-hidden="true"></span>notifs
+			</button>
 		</div>
-		<input type="search"
-			class="list-filter"
-			placeholder="Filter symbols…"
-			x-model="filter"
-			autocomplete="off"/>
 		if scopeOID != "" {
 			<a class="list-scope-clear" href={ moduleURL(module) }>View all in module</a>
 		}
 	</div>
+	if len(crumbs) > 0 {
+		<div class="list-scope-bar">
+			<nav class="scope-breadcrumb" aria-label="OID scope path">
+				for _, c := range crumbs {
+					if c.IsLast {
+						<span class="scope-crumb scope-crumb-current" aria-current="page">{ c.Name }</span>
+					} else {
+						<a class="scope-crumb" href={ workspaceURL(c.Module, c.OID) }>{ c.Name }</a>
+						<span class="scope-sep" aria-hidden="true">/</span>
+					}
+				}
+			</nav>
+			<span class="list-scope-count">{ fmt.Sprintf("%d objects", len(rows)) }</span>
+		</div>
+	}
 	<table class="list-table">
+		<thead>
+			<tr>
+				<th class="list-head-cell" scope="col"></th>
+				<th class="list-head-cell" scope="col">Name</th>
+				<th class="list-head-cell" scope="col">Syntax</th>
+				<th class="list-head-cell" scope="col">Access</th>
+				<th class="list-head-cell" scope="col">OID</th>
+			</tr>
+		</thead>
 		<tbody>
 			for _, s := range rows {
-				<tr class={ "list-row " + FamilyClass(&s) }
+				{{ oidPre, oidLast := SplitOIDLast(s.OID) }}
+				<tr
+					class={ "list-row " + FamilyClass(&s), templ.KV("selected", selectedOID != "" && s.OID == selectedOID) }
 					data-name={ s.Name }
 					data-oid={ s.OID }
 					data-kind={ string(s.Kind) }
 					x-show="matchesRow($el)">
-					<td class="list-cell-name">
-						<a href={ workspaceSymbolURL(s.ModuleName, s.Name, s.OID) }><code>{ s.Name }</code></a>
+					<td class="list-cell-badge">
+						<span class="tlet" aria-hidden="true">{ TypeLetter(&s) }</span>
 					</td>
-					<td class="list-cell-kind">{ string(s.Kind) }</td>
+					<td class="list-cell-name">
+						<a href={ workspaceSymbolURL(s.ModuleName, s.Name, s.OID) }>
+							<code>
+								@templ.Raw(SplitNameHTML(s.Name))
+							</code>
+						</a>
+					</td>
 					<td class="list-cell-syntax">{ s.Syntax }</td>
-					<td class="list-cell-oid">{ s.OID }</td>
+					<td class={ "list-cell-access " + AccessClass(s.Access) }>{ AccessLabel(s.Access) }</td>
+					<td class="list-cell-oid">
+						if s.OID != "" {
+							if oidPre != "" {
+								<span class="pre">{ oidPre }</span>
+							}
+							<span class="tail">{ oidLast }</span>
+						}
+					</td>
 				</tr>
 			}
 		</tbody>
@@ -209,13 +329,17 @@ templ workspaceList(rows []model.Symbol, module, scopeOID string) {
 }
 
 // workspaceDetail renders the right pane. When a symbol is
-// selected, the OID-decode breadcrumb is shown above the canonical
-// detail body. Otherwise an empty-state hint or a missing-OID
-// notice.
+// selected, the compact `workspaceDetailBody` paints the
+// kind+name header, the type/access/status pills, the action
+// buttons (Copy OID / Copy name / Close), the description block,
+// the OID decode and the properties grid — matching the handoff
+// design's right-pane anatomy. The canonical `symbolDetailBody`
+// is intentionally NOT used here; it carries page-level chrome
+// (full description prose, columns, used-by, source) too tall
+// for the 380px right pane.
 templ workspaceDetail(view *WorkspaceView) {
 	if view.Selected != nil {
-		@oidDecode(view.OIDPath)
-		@symbolDetailBody(view.Selected)
+		@workspaceDetailBody(view, view.Selected)
 	} else if view.MissingOID != "" {
 		<div class="empty-state">
 			<p class="empty-title">No symbol at <code>{ view.MissingOID }</code></p>
@@ -229,36 +353,109 @@ templ workspaceDetail(view *WorkspaceView) {
 	}
 }
 
-// oidDecode renders the breadcrumb-style decoded OID path above the
-// detail body. Each step is a link to that step's workspace URL,
-// so the user can navigate up/across the hierarchy.
-//
-// When a step has no name (neither a loaded MIB symbol nor a
-// canonical-table entry covers the prefix), the step renders as
-// just the bare numeric segment — no duplicated text.
-templ oidDecode(steps []model.OIDStep) {
-	if len(steps) > 0 {
-		<nav class="oid-decode" aria-label="OID path">
-			for i, st := range steps {
-				if i > 0 {
-					<span class="sep" aria-hidden="true">›</span>
-				}
-				if st.Module != "" {
-					<a class="oid-step" href={ workspaceURL(st.Module, st.Prefix) }>
-						<span class="oid-step-name">{ st.Name }</span>
-						<span class="oid-step-num">{ lastSegment(st.Prefix) }</span>
-					</a>
-				} else if st.Name != "" {
-					<span class="oid-step">
-						<span class="oid-step-name">{ st.Name }</span>
-						<span class="oid-step-num">{ lastSegment(st.Prefix) }</span>
-					</span>
-				} else {
-					<span class="oid-step">
-						<span class="oid-step-num">{ lastSegment(st.Prefix) }</span>
-					</span>
-				}
+// workspaceDetailBody is the compact, right-pane variant of the
+// symbol detail. The canonical /s/ page (`symbolDetailBody`)
+// remains the long-form reference; this is the at-a-glance view a
+// user gets when clicking a row in the workspace list. Sections in
+// order: kind+name header, family-colored type pill + access +
+// status, primary Copy-OID button + Copy-name + Close, description
+// block, OID decode (one row per dotted segment), properties grid.
+templ workspaceDetailBody(view *WorkspaceView, sv *SymbolView) {
+	{{ s := sv.Symbol }}
+	{{ fam := FamilyClass(s) }}
+	<div class="detail-head">
+		<div class={ "detail-kind " + fam }>
+			<span class="kdot" aria-hidden="true"></span>
+			{ KindLabel(s.Kind) }
+		</div>
+		<h2 class="detail-name"><code>{ s.Name }</code></h2>
+		<div class="detail-meta">
+			if s.Syntax != "" {
+				<span class={ "pill type " + fam }>{ s.Syntax }</span>
 			}
-		</nav>
-	}
+			if s.Access != "" {
+				<span class="pill">{ string(s.Access) }</span>
+			}
+			if s.Status != "" {
+				<span class="pill">{ string(s.Status) }</span>
+			}
+			if s.Units != "" {
+				<span class="pill">{ s.Units }</span>
+			}
+		</div>
+		<div class="detail-actions">
+			if s.OID != "" {
+				<button type="button" class="btn primary"
+					x-on:click={ "navigator.clipboard.writeText('" + s.OID + "')" }>
+					Copy OID
+				</button>
+			}
+			<button type="button" class="btn"
+				x-on:click={ "navigator.clipboard.writeText('" + s.Name + "')" }>
+				Copy name
+			</button>
+			<a class="btn" href={ moduleURL(s.ModuleName) }>Close</a>
+		</div>
+	</div>
+	<div class="detail-body">
+		if s.Description != "" {
+			<div class="section-title">Description</div>
+			<div class="desc">{ collapseWhitespace(s.Description) }</div>
+		}
+		if len(view.OIDPath) > 0 {
+			<div class="section-title">OID decode</div>
+			@oidDecodeSteps(view.OIDPath)
+		}
+		<div class="section-title">Properties</div>
+		<div class="kvbox">
+			<span class="k">name</span><span class="v">{ s.Name }</span>
+			if s.OID != "" {
+				<span class="k">oid</span><span class="v">{ s.OID }</span>
+			}
+			<span class="k">kind</span><span class="v">{ KindLabel(s.Kind) }</span>
+			if s.Syntax != "" {
+				<span class="k">syntax</span><span class="v">{ s.Syntax }</span>
+			}
+			if s.Access != "" {
+				<span class="k">access</span><span class="v">{ string(s.Access) }</span>
+			}
+			if s.Status != "" {
+				<span class="k">status</span><span class="v">{ string(s.Status) }</span>
+			}
+			if s.Units != "" {
+				<span class="k">units</span><span class="v">{ s.Units }</span>
+			}
+		</div>
+		if len(s.EnumValues) > 0 {
+			<div class="section-title">Enumeration</div>
+			<table class="enum-tbl">
+				<thead><tr><th>Value</th><th>Name</th></tr></thead>
+				<tbody>
+					for _, ev := range s.EnumValues {
+						<tr>
+							<td class="v">{ fmtInt64(ev.Number) }</td>
+							<td>{ ev.Name }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		}
+	</div>
 }
+
+// oidDecodeSteps renders one row per dotted OID segment in the
+// detail pane's "OID decode" section. Each row shows the numeric
+// segment right-aligned in a fixed gutter, then the resolved name
+// (or empty when the path stops mapping to known symbols). The
+// last segment's number is accent-colored and the label is bold.
+templ oidDecodeSteps(steps []model.OIDStep) {
+	<div class="oid-decode">
+		for i, st := range steps {
+			<div class={ "step", templ.KV("last", i == len(steps)-1) }>
+				<span class="n">{ lastSegment(st.Prefix) }</span>
+				<span class="lbl">{ st.Name }</span>
+			</div>
+		}
+	</div>
+}
+

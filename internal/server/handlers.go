@@ -121,7 +121,7 @@ func (s *Server) handleModuleIndex(w http.ResponseWriter, r *http.Request) {
 // handleWorkspace serves the 3-pane workspace shell at /m/{name}
 // and /m/{name}/{oid}. When oid is empty the right pane shows an
 // empty-state hint; when oid resolves to a symbol the right pane
-// renders the canonical detail body plus an OID-decode breadcrumb;
+// renders the compact detail body plus an OID-decode breadcrumb;
 // when oid is non-empty but doesn't match anything in the module
 // the workspace renders without a selection plus a soft missing-OID
 // notice.

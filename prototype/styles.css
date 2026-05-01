@@ -186,18 +186,23 @@ html { scroll-behavior: smooth; }
  * link, sit above the text-filter input. */
 .kind-chips { display: flex; gap: 6px; }
 .kind-chip {
-  background: transparent;
-  color: var(--fg-3);
+  background: var(--bg-elev);
+  color: var(--fg-2);
   border: 1px solid var(--line);
   padding: 2px 10px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   font-size: 12px;
   cursor: pointer;
 }
 .kind-chip:hover { color: var(--fg); border-color: var(--line-strong); }
+
+/* Active state — accent ring around an accent-tinted background,
+ * with accent text — matches the handoff "all" chip in image 3.
+ * Solid-accent fill is intentionally avoided here; the chip is a
+ * filter affordance, not a primary CTA. */
 .kind-chip[data-kind-active="true"] {
-  color: var(--accent-fg);
-  background: var(--accent);
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
   border-color: var(--accent);
 }
 .list-scope-clear {
@@ -1502,7 +1507,10 @@ button { font-family: inherit; }
 
 .tree-node { position: relative; }
 
-.tree-row {
+/* OID tree island row — distinct from the workspace navigator's
+ * `.tree-list .tree-row`, hence the `.tree-root` ancestor scope so
+ * the two row variants don't fight over the same selector. */
+.tree-root .tree-row {
   display: grid;
   grid-template-columns: 1.6em 4em 1fr auto;
   align-items: center;
@@ -1512,7 +1520,7 @@ button { font-family: inherit; }
   border-left: 2px solid transparent;
   margin-left: -2px;
 }
-.tree-row:hover { background: var(--bg-elev-2); }
+.tree-root .tree-row:hover { background: var(--bg-elev-2); }
 
 .tree-node[data-expanded="true"] > .tree-row { color: var(--fg); }
 
@@ -1568,4 +1576,1148 @@ button { font-family: inherit; }
   letter-spacing: 0.06em;
   margin-bottom: 4px;
   display: block;
+}
+
+/* --- workspace shell ------------------------------------------------ *
+ * The 3-pane workspace breaks out of Base's narrow `.content-inner`
+ * container so the navigator + inspector + detail panes can span the
+ * full viewport width. The `:has()` selectors are scoped to the
+ * workspace surface so other pages still get the centered prose
+ * layout from `.page` / `.content-inner`.
+ */
+main.page:has(.workspace-grid) {
+  max-width: none;
+  padding: 0;
+  display: block;
+}
+main.page:has(.workspace-grid) .content-inner,
+.content-inner:has(.workspace-grid) {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr) 380px;
+  height: calc(100vh - var(--topbar-h) - 40px - 56px);
+  min-height: 420px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+@media (max-width: 1100px) {
+  .workspace-grid { grid-template-columns: 280px minmax(0, 1fr); }
+  .workspace-detail { display: none; }
+}
+@media (max-width: 760px) {
+  .workspace-grid { grid-template-columns: 1fr; height: auto; min-height: 0; }
+  .workspace-tree { display: none; }
+}
+
+.workspace-tree {
+  border-right: 1px solid var(--line);
+  background: var(--bg);
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+  padding: 8px 0;
+  min-width: 0;
+}
+.workspace-tree::-webkit-scrollbar { width: 8px; }
+.workspace-tree::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+
+.workspace-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg);
+}
+
+.workspace-detail {
+  border-left: 1px solid var(--line);
+  background: var(--bg-elev);
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+  padding: 18px 18px 24px;
+  min-width: 0;
+}
+.workspace-detail::-webkit-scrollbar { width: 8px; }
+.workspace-detail::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+
+/* --- workspace status bar ------------------------------------------- */
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-elev);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 12px;
+}
+.status-bar-label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.10em;
+  color: var(--fg-3);
+}
+/* Module-name pill — accent-tinted background + 1px border at
+ * 0.4 alpha. Sits between the MODULE label and the module's OID
+ * in the status bar; clicking it opens the module-picker modal. */
+.status-bar-module {
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in oklch, var(--accent) 40%, transparent);
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+  letter-spacing: -0.005em;
+}
+.status-bar-module:hover {
+  background: color-mix(in oklch, var(--accent) 22%, transparent);
+}
+.status-bar-oid {
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+}
+.status-bar-oid .dot { color: var(--fg-4); }
+
+.status-bar-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-left: auto;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+}
+/* Each count is "<n> objects": the <strong> number is painted in
+ * the family color, the .lbl tail stays muted. No leading dot or
+ * border — the bare typography is what the handoff calls for. */
+.status-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+.status-count strong {
+  color: var(--c, var(--fg));
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.status-count .lbl { color: var(--fg-3); }
+.status-count.t-counter { --c: var(--c-counter); }
+.status-count.t-gauge   { --c: var(--c-gauge); }
+.status-count.t-int     { --c: var(--c-int); }
+.status-count.t-text    { --c: var(--c-text); }
+.status-count.t-index   { --c: var(--c-index); }
+.status-count.t-time    { --c: var(--c-time); }
+.status-count.t-addr    { --c: var(--c-addr); }
+.status-count.t-bool    { --c: var(--c-bool); }
+.status-count.t-notif   { --c: var(--c-notif); }
+.status-count.t-struct  { --c: var(--fg); }
+.status-count.empty {
+  color: var(--fg-4);
+  border: 1px dashed var(--line-soft);
+  border-radius: var(--radius-pill);
+  padding: 1px 9px;
+}
+
+/* --- workspace tree (left pane) ------------------------------------- */
+
+/* TREE band — uppercase label + collapse-all / expand-all square
+ * buttons on the right. Sits flush above the tree list and shares
+ * the workspace-tree's left border. */
+.tree-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.tree-head-title {
+  flex: 1;
+  font-family: var(--font-sans);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--fg-3);
+}
+.tree-head-btn {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--fg-3);
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tree-head-btn:hover { color: var(--fg); background: var(--bg-elev); }
+
+.tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 12px;
+}
+.workspace-tree .tree-children-container {
+  list-style: none;
+  margin: 0;
+  padding-left: 14px;
+}
+/* Tree row container — block-level so the children-container
+ * (rendered as a sibling `<ul>`) breaks to its own row underneath
+ * the head. Selection styling and the family stripe live on the
+ * `<li>` itself; the actual chevron + link sit inside the head. */
+.workspace-tree .tree-row {
+  display: block;
+  position: relative;
+  border-left: 2px solid transparent;
+  margin-left: 0;
+}
+.workspace-tree .tree-row-head {
+  display: flex;
+  align-items: center;
+  padding: 0 12px 0 8px;
+  height: 24px;
+  color: var(--fg-2);
+  white-space: nowrap;
+  position: relative;
+}
+.workspace-tree .tree-row-head:hover { background: var(--bg-row-hover); color: var(--fg); }
+.workspace-tree .tree-row[aria-current="true"] > .tree-row-head,
+.workspace-tree .tree-row.selected > .tree-row-head {
+  background: var(--bg-row-active);
+  color: var(--fg);
+}
+.workspace-tree .tree-row[aria-current="true"],
+.workspace-tree .tree-row.selected {
+  border-left-color: var(--accent);
+}
+/* Stretched-link affordance: the row-link's ::before fills the
+ * full row-head box so a click anywhere on the row navigates,
+ * not just on the visible name text. The chevron's `click.stop`
+ * keeps expand-toggle clicks from also navigating. */
+.workspace-tree .tree-row-link::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+.workspace-tree .tree-row-head .tree-chevron {
+  position: relative;
+  z-index: 2;
+}
+.tree-chevron {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--fg-3);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  font-weight: 600;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin-right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.tree-chevron:hover { color: var(--fg); }
+.tree-chevron-spacer,
+.tree-leaf-bullet {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-right: 6px;
+  flex-shrink: 0;
+  color: var(--fg-4);
+  font-weight: 700;
+}
+.tree-row-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  color: inherit;
+  text-decoration: none;
+  min-width: 0;
+  flex: 1;
+}
+.tree-row-link:hover { text-decoration: none; }
+.tree-row-name {
+  color: inherit;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+/* The pre/tail split encodes the name's distinguishing portion
+ * via COLOR only — keeping the same weight for both. Earlier
+ * iterations set the tail heavier (500/600) but the contrast
+ * read as "bold" against the dim prefix and made the wall of
+ * names visually noisy. */
+.tree-row-name .pre { color: var(--fg-4); font-weight: inherit; }
+.tree-row-name .tail { color: inherit; font-weight: inherit; }
+.workspace-tree .tree-row.selected .tree-row-name .pre { color: var(--fg-2); }
+.workspace-tree .tree-row.selected .tree-row-name .tail { color: var(--fg); }
+
+/* Leaf rows recolor the `·` glyph by family so a wall of leaves
+ * still encodes type at a glance. */
+.workspace-tree .tree-row.t-counter .tree-leaf-bullet { color: var(--c-counter); }
+.workspace-tree .tree-row.t-gauge   .tree-leaf-bullet { color: var(--c-gauge); }
+.workspace-tree .tree-row.t-int     .tree-leaf-bullet { color: var(--c-int); }
+.workspace-tree .tree-row.t-text    .tree-leaf-bullet { color: var(--c-text); }
+.workspace-tree .tree-row.t-index   .tree-leaf-bullet { color: var(--c-index); }
+.workspace-tree .tree-row.t-time    .tree-leaf-bullet { color: var(--c-time); }
+.workspace-tree .tree-row.t-addr    .tree-leaf-bullet { color: var(--c-addr); }
+.workspace-tree .tree-row.t-bool    .tree-leaf-bullet { color: var(--c-bool); }
+.workspace-tree .tree-row.t-notif   .tree-leaf-bullet { color: var(--c-notif); }
+.workspace-tree .tree-row.t-counter .tree-chevron { color: var(--c-counter); }
+.workspace-tree .tree-row.t-gauge   .tree-chevron { color: var(--c-gauge); }
+.workspace-tree .tree-row.t-int     .tree-chevron { color: var(--c-int); }
+.workspace-tree .tree-row.t-text    .tree-chevron { color: var(--c-text); }
+.workspace-tree .tree-row.t-index   .tree-chevron { color: var(--c-index); }
+.workspace-tree .tree-row.t-time    .tree-chevron { color: var(--c-time); }
+.workspace-tree .tree-row.t-addr    .tree-chevron { color: var(--c-addr); }
+.workspace-tree .tree-row.t-bool    .tree-chevron { color: var(--c-bool); }
+.workspace-tree .tree-row.t-notif   .tree-chevron { color: var(--c-notif); }
+
+/* --- workspace list pane (center) ----------------------------------- */
+
+.list-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-elev);
+}
+.list-search {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0 10px;
+  height: 30px;
+}
+.list-search:focus-within { border-color: var(--accent); }
+.list-search .prompt {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-weight: 700;
+  user-select: none;
+}
+.list-filter {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 12px;
+  height: 100%;
+  min-width: 0;
+}
+.list-filter::placeholder { color: var(--fg-4); }
+.list-search .kbd {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 10px;
+  color: var(--fg-3);
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+
+/* The kind-chip row pre-existed in styles.css, but inside the
+ * workspace toolbar it sits next to the prompt-style search and
+ * needs tighter chip metrics, a row-flex container, and a leading
+ * colored dot per family chip per the handoff. */
+.list-controls .kind-chips { gap: 6px; flex-shrink: 0; }
+.list-controls .kind-chip {
+  height: 30px;
+  padding: 0 10px;
+  line-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  text-transform: lowercase;
+  letter-spacing: 0;
+  font-size: 11px;
+  font-weight: 500;
+}
+.list-controls .kind-chip .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c, var(--fg-4));
+  flex-shrink: 0;
+}
+.list-controls .kind-chip.kind-scalar { --c: var(--c-gauge); }
+.list-controls .kind-chip.kind-table  { --c: var(--c-struct); }
+.list-controls .kind-chip.kind-notif  { --c: var(--c-notif); }
+.list-controls .list-scope-clear {
+  margin-left: 4px;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+.list-controls .list-scope-clear:hover { color: var(--accent); }
+
+/* Scope-bar — clickable breadcrumb path through the OID tree
+ * (`axMgmt / axSystem / axSysCpu / axSysCpuTable`) with an
+ * "<n> objects" count anchored right. Each segment links to its
+ * own scope; the trailing segment is the current scope and
+ * renders in accent without a link. Suppressed when no URL scope
+ * is set so the unscoped landing on a module renders flush. */
+.list-scope-bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 14px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+.scope-breadcrumb {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 4px;
+  min-width: 0;
+}
+.scope-crumb {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  color: var(--fg-2);
+  text-decoration: none;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.scope-crumb:hover {
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  text-decoration: none;
+}
+.scope-crumb-current {
+  color: var(--accent);
+  font-weight: 600;
+  cursor: default;
+}
+.scope-crumb-current:hover {
+  background: transparent;
+}
+.scope-sep {
+  color: var(--fg-4);
+  user-select: none;
+}
+.list-scope-count {
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+
+/* List table — sticky header + 5-col grid (badge / name / syntax /
+ * access / oid). Implemented with display:grid on rows so column
+ * widths line up `ls -l`-style across the whole list, even when the
+ * user filters or scopes the dataset. */
+.workspace-list .list-table {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0;
+  overflow: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+.workspace-list .list-table::-webkit-scrollbar { width: 10px; height: 10px; }
+.workspace-list .list-table::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; }
+
+.workspace-list .list-table thead,
+.workspace-list .list-table tbody,
+.workspace-list .list-table tr {
+  display: contents;
+}
+.workspace-list .list-table {
+  display: grid;
+  grid-template-columns: 28px minmax(220px, 1.6fr) 110px 70px minmax(180px, 1fr);
+  align-items: stretch;
+  align-content: start;
+}
+.workspace-list .list-head-cell {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.10em;
+  color: var(--fg-3);
+  padding: 8px 12px 8px 0;
+  text-align: left;
+  height: 28px;
+  display: flex;
+  align-items: center;
+}
+.workspace-list .list-head-cell:first-child { padding-left: 12px; }
+
+.workspace-list .list-row {
+  display: contents;
+}
+.workspace-list .list-row > td,
+.workspace-list .list-row > th {
+  height: var(--row-h, 28px);
+  padding: 0 12px 0 0;
+  display: flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line-soft);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  position: relative;
+  transition: background 50ms ease;
+}
+.workspace-list .list-row:hover > td { background: var(--bg-row-hover); }
+.workspace-list .list-row.selected > td { background: var(--bg-row-active); }
+.workspace-list .list-row.selected > td:first-child {
+  border-left-color: var(--accent);
+}
+.workspace-list .list-row.selected .list-cell-name a { color: var(--fg); }
+.workspace-list .list-row.selected .list-cell-name .pre { color: var(--fg-2); }
+.workspace-list .list-row.selected .list-cell-name .tail { color: var(--fg); font-weight: inherit; }
+.workspace-list .list-cell-name .pre { color: var(--fg-4); font-weight: inherit; }
+.workspace-list .list-cell-name .tail { color: var(--fg); font-weight: inherit; }
+
+/* 2px family stripe on the leftmost cell — drawn as a left border
+ * on the first cell (rather than `::before` on the row) because
+ * each row is rendered as `display: contents` and has no box of
+ * its own. design.md mandates "no layered shadows", so border —
+ * not inset box-shadow — is the correct primitive here.
+ *
+ * Padding is tuned so the 28px badge column actually fits the
+ * 18px tlet square: 28 - 6(left) - 2(right) - 2(border) = 18px.
+ * The inherited 12px right-padding from the generic cell rule
+ * would otherwise leave only 4px for the badge and flex would
+ * shrink it to ~8px wide. */
+.workspace-list .list-row > td:first-child {
+  padding-left: 6px;
+  padding-right: 2px;
+  border-left: 2px solid var(--row-c, transparent);
+}
+.workspace-list .list-row.t-counter > td:first-child { --row-c: var(--c-counter); }
+.workspace-list .list-row.t-gauge   > td:first-child { --row-c: var(--c-gauge); }
+.workspace-list .list-row.t-int     > td:first-child { --row-c: var(--c-int); }
+.workspace-list .list-row.t-text    > td:first-child { --row-c: var(--c-text); }
+.workspace-list .list-row.t-index   > td:first-child { --row-c: var(--c-index); }
+.workspace-list .list-row.t-time    > td:first-child { --row-c: var(--c-time); }
+.workspace-list .list-row.t-addr    > td:first-child { --row-c: var(--c-addr); }
+.workspace-list .list-row.t-bool    > td:first-child { --row-c: var(--c-bool); }
+.workspace-list .list-row.t-notif   > td:first-child { --row-c: var(--c-notif); }
+.workspace-list .list-row.t-struct  > td:first-child { --row-c: var(--c-struct); }
+
+/* Tlet sits as a flex item inside the badge cell — flex-shrink: 0
+ * so it never collapses below its 18×18 target if a future cell
+ * change tightens the chrome budget. */
+.tlet { flex-shrink: 0; }
+/* Name cell — `padding-left: 8px` opens up breathing room between
+ * the badge (in the previous cell) and the name text. The 28px
+ * badge column itself is sized to fit the 18×18 tlet exactly, so
+ * the spacing has to live on the name cell, not the badge cell. */
+.list-cell-name {
+  color: var(--fg);
+  font-weight: 500;
+  padding-left: 8px;
+}
+.list-cell-name a { color: inherit; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
+.list-cell-name a:hover { color: var(--accent); }
+.list-cell-name code { font-family: var(--font-mono); font-feature-settings: 'liga' 0, 'calt' 0; }
+.list-cell-syntax {
+  font-size: 11px;
+  color: var(--c, var(--fg-2));
+  font-weight: 500;
+}
+.workspace-list .list-row.t-counter .list-cell-syntax { --c: var(--c-counter); }
+.workspace-list .list-row.t-gauge   .list-cell-syntax { --c: var(--c-gauge); }
+.workspace-list .list-row.t-int     .list-cell-syntax { --c: var(--c-int); }
+.workspace-list .list-row.t-text    .list-cell-syntax { --c: var(--c-text); }
+.workspace-list .list-row.t-index   .list-cell-syntax { --c: var(--c-index); }
+.workspace-list .list-row.t-time    .list-cell-syntax { --c: var(--c-time); }
+.workspace-list .list-row.t-addr    .list-cell-syntax { --c: var(--c-addr); }
+.workspace-list .list-row.t-bool    .list-cell-syntax { --c: var(--c-bool); }
+.workspace-list .list-row.t-notif   .list-cell-syntax { --c: var(--c-notif); }
+.workspace-list .list-row.t-struct  .list-cell-syntax { --c: var(--c-struct); }
+
+.list-cell-access {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-3);
+}
+.list-cell-access.ro { color: var(--c-gauge); }
+.list-cell-access.rw { color: var(--c-counter); }
+.list-cell-access.na { color: var(--fg-4); }
+
+/* OID column — prefix dim, last segment bright bold ("highlighted
+ * index indicator" per the handoff). The pre/tail split happens
+ * server-side via SplitOIDLast, so the dim/bright treatment
+ * survives client-side filtering and works without JS. */
+.list-cell-oid {
+  color: var(--fg-4);
+  font-variant-numeric: tabular-nums;
+}
+.list-cell-oid .pre { color: var(--fg-4); }
+.list-cell-oid .tail {
+  color: var(--fg);
+  font-weight: 600;
+}
+.workspace-list .list-row.selected .list-cell-oid .pre { color: var(--fg-3); }
+.workspace-list .list-row.selected .list-cell-oid .tail { color: var(--accent); }
+
+/* type-letter badge — single capital letter in an 18×18 family-tinted
+ * rounded-square. The `.t-*` color class controls --c via the row's
+ * family class (set above for syntax), so only the badge's own
+ * structural rules live here. */
+.tlet {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-weight: 700;
+  font-size: 10px;
+  color: var(--c, var(--fg-3));
+  background: color-mix(in oklch, var(--c, var(--fg-3)) 18%, transparent);
+  border: 1px solid color-mix(in oklch, var(--c, var(--fg-3)) 40%, transparent);
+}
+.workspace-list .list-row.t-counter .tlet { --c: var(--c-counter); }
+.workspace-list .list-row.t-gauge   .tlet { --c: var(--c-gauge); }
+.workspace-list .list-row.t-int     .tlet { --c: var(--c-int); }
+.workspace-list .list-row.t-text    .tlet { --c: var(--c-text); }
+.workspace-list .list-row.t-index   .tlet { --c: var(--c-index); }
+.workspace-list .list-row.t-time    .tlet { --c: var(--c-time); }
+.workspace-list .list-row.t-addr    .tlet { --c: var(--c-addr); }
+.workspace-list .list-row.t-bool    .tlet { --c: var(--c-bool); }
+.workspace-list .list-row.t-notif   .tlet { --c: var(--c-notif); }
+.workspace-list .list-row.t-struct  .tlet { --c: var(--c-struct); }
+
+/* --- workspace detail pane (right) ---------------------------------- */
+
+/* Reset the wrapper padding so the inner .detail-head and
+ * .detail-body own their own padding (matches the handoff: each
+ * section has its own padding for a clean visual separation). */
+.workspace-detail { padding: 0; }
+
+.workspace-detail .empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  text-align: center;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 12px;
+  padding: 32px 18px;
+}
+.workspace-detail .empty-title {
+  font-size: 13px;
+  color: var(--fg-2);
+  margin: 0 0 6px;
+  font-weight: 500;
+}
+.workspace-detail .empty-hint {
+  margin: 0;
+  max-width: 32ch;
+  line-height: 1.55;
+}
+
+/* Compact detail-pane head — kind label + colored dot, big mono
+ * name, type/access/status pills, action row. */
+.workspace-detail .detail-head {
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-elev);
+}
+.workspace-detail .detail-kind {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-sans);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.10em;
+  color: var(--fg-3);
+  margin-bottom: 6px;
+}
+.workspace-detail .detail-kind .kdot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c, var(--fg-3));
+  flex-shrink: 0;
+}
+.workspace-detail .detail-kind.t-counter { --c: var(--c-counter); }
+.workspace-detail .detail-kind.t-gauge   { --c: var(--c-gauge); }
+.workspace-detail .detail-kind.t-int     { --c: var(--c-int); }
+.workspace-detail .detail-kind.t-text    { --c: var(--c-text); }
+.workspace-detail .detail-kind.t-index   { --c: var(--c-index); }
+.workspace-detail .detail-kind.t-time    { --c: var(--c-time); }
+.workspace-detail .detail-kind.t-addr    { --c: var(--c-addr); }
+.workspace-detail .detail-kind.t-bool    { --c: var(--c-bool); }
+.workspace-detail .detail-kind.t-notif   { --c: var(--c-notif); }
+.workspace-detail .detail-kind.t-struct  { --c: var(--c-struct); }
+
+.workspace-detail .detail-name {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--fg);
+  margin: 0;
+  word-break: break-word;
+}
+.workspace-detail .detail-name code { font-family: inherit; }
+
+.workspace-detail .detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.workspace-detail .detail-meta .pill {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  padding: 2px 8px;
+  border-radius: 3px;
+  color: var(--fg-2);
+  margin: 0;
+  vertical-align: 0;
+}
+.workspace-detail .detail-meta .pill.type {
+  color: var(--c, var(--fg-2));
+  border-color: color-mix(in oklch, var(--c, var(--fg-2)) 40%, transparent);
+  background: color-mix(in oklch, var(--c, var(--fg-2)) 14%, transparent);
+}
+.workspace-detail .detail-meta .pill.type.t-counter { --c: var(--c-counter); }
+.workspace-detail .detail-meta .pill.type.t-gauge   { --c: var(--c-gauge); }
+.workspace-detail .detail-meta .pill.type.t-int     { --c: var(--c-int); }
+.workspace-detail .detail-meta .pill.type.t-text    { --c: var(--c-text); }
+.workspace-detail .detail-meta .pill.type.t-index   { --c: var(--c-index); }
+.workspace-detail .detail-meta .pill.type.t-time    { --c: var(--c-time); }
+.workspace-detail .detail-meta .pill.type.t-addr    { --c: var(--c-addr); }
+.workspace-detail .detail-meta .pill.type.t-bool    { --c: var(--c-bool); }
+.workspace-detail .detail-meta .pill.type.t-notif   { --c: var(--c-notif); }
+
+.workspace-detail .detail-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+}
+.workspace-detail .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--fg-2);
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 80ms ease;
+  text-decoration: none;
+}
+.workspace-detail .btn:hover {
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  text-decoration: none;
+}
+.workspace-detail .btn.primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.workspace-detail .btn.primary:hover { filter: brightness(1.08); }
+
+/* Detail body sections + dashed-trail section titles. */
+.workspace-detail .detail-body {
+  padding: 14px 18px 24px;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 12px;
+}
+.workspace-detail .section-title {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--fg-3);
+  margin: 16px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.workspace-detail .section-title:first-child { margin-top: 0; }
+.workspace-detail .section-title::after {
+  content: '';
+  flex: 1;
+  border-bottom: 1px dashed var(--line);
+}
+
+/* Description block — `white-space: normal` (the default) so the
+ * SMI source's hard-wrap newlines + continuation indentation
+ * collapse into a flowing paragraph. The text is also pre-
+ * collapsed at template time via `collapseWhitespace` so this
+ * reflows correctly even if a future CSS change reintroduces
+ * pre-wrap. */
+.workspace-detail .desc {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--fg-2);
+}
+
+/* OID decode — one row per dotted segment. Numeric segment is
+ * right-aligned in a 28px gutter, label takes the remainder, and
+ * the last row is accent-colored + bold. */
+.workspace-detail .oid-decode {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+}
+.workspace-detail .oid-decode .step {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 3px 4px;
+}
+.workspace-detail .oid-decode .step .n {
+  text-align: right;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+.workspace-detail .oid-decode .step .lbl { color: var(--fg-2); }
+.workspace-detail .oid-decode .step.last .n {
+  color: var(--accent);
+  font-weight: 700;
+}
+.workspace-detail .oid-decode .step.last .lbl {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* Properties grid — 76px label column, value column. Labels are
+ * uppercase tracked, values mono. */
+.workspace-detail .kvbox {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  gap: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  overflow: hidden;
+}
+.workspace-detail .kvbox .k {
+  background: var(--bg-elev);
+  color: var(--fg-3);
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  border-right: 1px solid var(--line-soft);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.workspace-detail .kvbox .v {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--fg);
+  word-break: break-all;
+}
+.workspace-detail .kvbox .k:nth-last-of-type(1),
+.workspace-detail .kvbox .v:nth-last-of-type(1) {
+  border-bottom: 0;
+}
+
+/* Detail-pane enum table — same dark-paper style as kvbox. */
+.workspace-detail .enum-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.workspace-detail .enum-tbl td,
+.workspace-detail .enum-tbl th {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.workspace-detail .enum-tbl tr:last-child td { border-bottom: 0; }
+.workspace-detail .enum-tbl th {
+  background: var(--bg-elev);
+  font-family: var(--font-sans);
+  font-weight: 500;
+  color: var(--fg-3);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.workspace-detail .enum-tbl td.v {
+  color: var(--c-int);
+  width: 50px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- module picker overlay ------------------------------------------ *
+ * Body-mounted Alpine overlay triggered by clicking the module name in
+ * the status bar. Centered card on a translucent backdrop; the search
+ * input is sticky at the top, the result list scrolls underneath, and
+ * a footer surfaces "+N more — keep typing to narrow" when the
+ * filtered set exceeds the visible window. design.md says no layered
+ * shadows, so the lift comes from a 1px border + elevated surface
+ * tone, not box-shadow.
+ */
+.module-picker {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: color-mix(in oklch, var(--bg) 75%, transparent);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 14vh var(--gutter, 16px) var(--gutter, 16px);
+}
+.module-picker-card {
+  width: 100%;
+  max-width: 560px;
+  max-height: 70vh;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.module-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-elev);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.module-picker-search .prompt {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-weight: 700;
+  font-size: 14px;
+  user-select: none;
+  flex-shrink: 0;
+}
+.module-picker-input {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 14px;
+  height: 24px;
+  padding: 0;
+  min-width: 0;
+}
+.module-picker-input::placeholder { color: var(--fg-4); }
+.module-picker-search .kbd {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 10px;
+  color: var(--fg-3);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 1px 6px;
+  flex-shrink: 0;
+}
+
+.module-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+.module-picker-list::-webkit-scrollbar { width: 8px; }
+.module-picker-list::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+
+.module-picker-item {
+  margin: 0;
+}
+.module-picker-item a {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: baseline;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+}
+.module-picker-item a:hover,
+.module-picker-item[data-active="true"] a {
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+  text-decoration: none;
+}
+.module-picker-name {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 13px;
+  color: var(--fg);
+  font-weight: 500;
+}
+.module-picker-item[data-active="true"] .module-picker-name { color: var(--accent); }
+.module-picker-oid {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  color: var(--fg-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.module-picker-empty {
+  padding: 36px 18px;
+  text-align: center;
+  color: var(--fg-3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.module-picker-empty-title {
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+.module-picker-empty-hint {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  color: var(--fg-4);
+}
+
+.module-picker-footer {
+  padding: 8px 16px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--bg);
+  text-align: center;
+}
+.module-picker-more {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  color: var(--fg-3);
 }

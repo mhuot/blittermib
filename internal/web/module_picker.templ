@@ -2,11 +2,17 @@ package web
 
 import "github.com/no42-org/blittermib/internal/model"
 
-// modulePicker is the body-mounted Alpine modal triggered by
+// modulePicker is the body-mounted Alpine overlay triggered by
 // clicking the module name in the status bar. The full module list
-// is preloaded (it's bounded — at most ~1k rows in the worst
-// standard-MIB-bundle case), so the filter is pure client-side
-// string matching with no AJAX round-trip.
+// is preloaded server-side as a hidden JSON payload (it's bounded —
+// at most ~1k rows in the worst standard-MIB-bundle case), and
+// Alpine renders only the first 10 matches client-side with a
+// "+N more" indicator nudging the user to keep typing.
+//
+// The picker is a centered card overlaying the page (not a
+// dropdown anchored to the status-bar button). At 1k modules the
+// dropdown would be cramped and a centered overlay reads better
+// next to the keyboard-driven type-ahead UX.
 templ modulePicker(modules []model.Module) {
 	<div class="module-picker"
 		x-data="picker()"
@@ -16,26 +22,45 @@ templ modulePicker(modules []model.Module) {
 		x-on:click.self="open = false"
 		x-cloak>
 		<div class="module-picker-card" role="dialog" aria-label="Switch module">
-			<input type="search"
-				class="module-picker-input"
-				x-ref="input"
-				x-model="query"
-				placeholder="Switch module…"
-				autocomplete="off"/>
-			<ul class="module-picker-list">
-				for _, m := range modules {
+			<div class="module-picker-search">
+				<span class="prompt" aria-hidden="true">›</span>
+				<input type="search"
+					class="module-picker-input"
+					x-ref="input"
+					x-model="query"
+					placeholder="Switch module — start typing to filter…"
+					autocomplete="off"
+					aria-label="Filter modules"/>
+				<span class="kbd" aria-hidden="true">esc</span>
+			</div>
+			<ul class="module-picker-list" role="listbox">
+				<template x-for="(m, idx) in visible" x-bind:key="m.name">
 					<li class="module-picker-item"
-						data-name={ m.Name }
-						x-show="!query || matchesRow($el)">
-						<a href={ moduleURL(m.Name) }>
-							<code class="module-picker-name">{ m.Name }</code>
-							if m.OIDRoot != "" {
-								<span class="module-picker-oid">{ m.OIDRoot }</span>
-							}
+						role="option"
+						x-bind:data-active="idx === active">
+						<a x-bind:href="'/m/' + encodeURIComponent(m.name)"
+							x-on:mouseenter="active = idx">
+							<code class="module-picker-name" x-text="m.name"></code>
+							<span class="module-picker-oid"
+								x-show="m.oid"
+								x-text="m.oid"></span>
 						</a>
 					</li>
-				}
+				</template>
+				<li class="module-picker-empty"
+					x-show="filtered.length === 0">
+					<span class="module-picker-empty-title">No modules match</span>
+					<span class="module-picker-empty-hint" x-text="'Tried: ' + query"></span>
+				</li>
 			</ul>
+			<div class="module-picker-footer"
+				x-show="hiddenCount > 0">
+				<span class="module-picker-more"
+					x-text="'+ ' + hiddenCount + ' more — keep typing to narrow'"></span>
+			</div>
 		</div>
+		<script id="module-picker-data" type="application/json">
+			@templ.Raw(PickerModulesJSON(modules))
+		</script>
 	</div>
 }

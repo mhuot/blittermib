@@ -248,10 +248,17 @@ func TestAPITreeFragment(t *testing.T) {
 	// (no surrounding `<ul>`); the chevron's HTMX swap appends
 	// them into the pre-rendered .tree-children-container in the
 	// parent row.
+	//
+	// Phase 5: workspace tree rows split the camelCase name into
+	// `<span class="pre">` + `<span class="tail">` for the dim/
+	// bright treatment, so `>ifIndex<` no longer appears as a
+	// literal substring. We assert on `data-name="…"` instead —
+	// it carries the unsplit name and is the API a future test
+	// (or scraper) would actually want to key off.
 	for _, want := range []string{
 		`class="tree-row `,
-		`>ifIndex<`,
-		`>ifInOctets<`,
+		`data-name="ifIndex"`,
+		`data-name="ifInOctets"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("tree fragment missing %q", want)
@@ -349,7 +356,15 @@ func TestWorkspaceScopeFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := body(t, resp)
-	for _, want := range []string{">ifTable<", ">ifEntry<", ">ifIndex<", ">ifInOctets<"} {
+	// Phase 5: list+tree rows split camelCase names into pre/tail
+	// spans, so we key off `data-name="…"` (carried on every row)
+	// rather than the bare visible text.
+	for _, want := range []string{
+		`data-name="ifTable"`,
+		`data-name="ifEntry"`,
+		`data-name="ifIndex"`,
+		`data-name="ifInOctets"`,
+	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("unscoped /m/IF-MIB missing %q", want)
 		}
@@ -362,7 +377,11 @@ func TestWorkspaceScopeFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	scoped := body(t, resp)
-	for _, want := range []string{">ifEntry<", ">ifIndex<", ">ifInOctets<"} {
+	for _, want := range []string{
+		`data-name="ifEntry"`,
+		`data-name="ifIndex"`,
+		`data-name="ifInOctets"`,
+	} {
 		if !strings.Contains(scoped, want) {
 			t.Errorf("scoped to ifEntry missing %q", want)
 		}
@@ -386,12 +405,16 @@ func TestWorkspaceKindChips(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := body(t, resp)
+	// Phase 5: chip labels are lowercase (matching the handoff
+	// terminal aesthetic) and carry a colored leading dot before
+	// the text — but the dot is suppressed on the "all" chip so
+	// `>all</button>` still matches the lowercase plain form.
 	for _, want := range []string{
 		`class="kind-chips"`,
-		`>All</button>`,
-		`>Scalars</button>`,
-		`>Tables</button>`,
-		`>Notifs</button>`,
+		`>all</button>`,
+		`>scalars`,
+		`>tables`,
+		`>notifs`,
 		`data-kind="table"`,
 		`data-kind="column"`,
 	} {
@@ -500,10 +523,15 @@ func TestHTMXLoadedOnEveryPage(t *testing.T) {
 				t.Fatal(err)
 			}
 			html := body(t, resp)
-			for _, want := range []string{`/static/htmx.min.js`, `hx-boost="true"`} {
-				if !strings.Contains(html, want) {
-					t.Errorf("page missing %q", want)
-				}
+			// htmx is loaded for explicit `htmx.ajax(...)` calls in the
+			// workspace tree's chevron-expand handler (and any future
+			// island that wants partial swaps). Phase 5 dropped global
+			// `hx-boost` from the body — full-body swaps caused
+			// visible "in-flight" flicker on every navigation; native
+			// browser navigation is smoother on the workspace surface
+			// where the entire body would have to be replaced anyway.
+			if !strings.Contains(html, `/static/htmx.min.js`) {
+				t.Errorf("page missing %q", `/static/htmx.min.js`)
 			}
 		})
 	}

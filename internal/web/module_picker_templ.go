@@ -10,11 +10,17 @@ import templruntime "github.com/a-h/templ/runtime"
 
 import "github.com/no42-org/blittermib/internal/model"
 
-// modulePicker is the body-mounted Alpine modal triggered by
+// modulePicker is the body-mounted Alpine overlay triggered by
 // clicking the module name in the status bar. The full module list
-// is preloaded (it's bounded — at most ~1k rows in the worst
-// standard-MIB-bundle case), so the filter is pure client-side
-// string matching with no AJAX round-trip.
+// is preloaded server-side as a hidden JSON payload (it's bounded —
+// at most ~1k rows in the worst standard-MIB-bundle case), and
+// Alpine renders only the first 10 matches client-side with a
+// "+N more" indicator nudging the user to keep typing.
+//
+// The picker is a centered card overlaying the page (not a
+// dropdown anchored to the status-bar button). At 1k modules the
+// dropdown would be cramped and a centered overlay reads better
+// next to the keyboard-driven type-ahead UX.
 func modulePicker(modules []model.Module) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -36,79 +42,7 @@ func modulePicker(modules []model.Module) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"module-picker\" x-data=\"picker()\" x-show=\"open\" x-on:picker:open.window=\"open = true; $nextTick(() => $refs.input.focus())\" x-on:keydown.escape.window=\"open = false\" x-on:click.self=\"open = false\" x-cloak><div class=\"module-picker-card\" role=\"dialog\" aria-label=\"Switch module\"><input type=\"search\" class=\"module-picker-input\" x-ref=\"input\" x-model=\"query\" placeholder=\"Switch module…\" autocomplete=\"off\"><ul class=\"module-picker-list\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		for _, m := range modules {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<li class=\"module-picker-item\" data-name=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var2 string
-			templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(m.Name)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/module_picker.templ`, Line: 28, Col: 24}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "\" x-show=\"!query || matchesRow($el)\"><a href=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var3 templ.SafeURL
-			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinURLErrs(moduleURL(m.Name))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/module_picker.templ`, Line: 30, Col: 33}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\"><code class=\"module-picker-name\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var4 string
-			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(m.Name)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/module_picker.templ`, Line: 31, Col: 48}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "</code> ")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			if m.OIDRoot != "" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<span class=\"module-picker-oid\">")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var5 string
-				templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(m.OIDRoot)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/module_picker.templ`, Line: 33, Col: 51}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</span>")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "</a></li>")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "</ul></div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"module-picker\" x-data=\"picker()\" x-show=\"open\" x-on:picker:open.window=\"open = true; $nextTick(() => $refs.input.focus())\" x-on:keydown.escape.window=\"open = false\" x-on:click.self=\"open = false\" x-cloak><div class=\"module-picker-card\" role=\"dialog\" aria-label=\"Switch module\"><div class=\"module-picker-search\"><span class=\"prompt\" aria-hidden=\"true\">›</span> <input type=\"search\" class=\"module-picker-input\" x-ref=\"input\" x-model=\"query\" placeholder=\"Switch module — start typing to filter…\" autocomplete=\"off\" aria-label=\"Filter modules\"> <span class=\"kbd\" aria-hidden=\"true\">esc</span></div><ul class=\"module-picker-list\" role=\"listbox\"><template x-for=\"(m, idx) in visible\" x-bind:key=\"m.name\"><li class=\"module-picker-item\" role=\"option\" x-bind:data-active=\"idx === active\"><a x-bind:href=\"'/m/' + encodeURIComponent(m.name)\" x-on:mouseenter=\"active = idx\"><code class=\"module-picker-name\" x-text=\"m.name\"></code> <span class=\"module-picker-oid\" x-show=\"m.oid\" x-text=\"m.oid\"></span></a></li></template><li class=\"module-picker-empty\" x-show=\"filtered.length === 0\"><span class=\"module-picker-empty-title\">No modules match</span> <span class=\"module-picker-empty-hint\" x-text=\"'Tried: ' + query\"></span></li></ul><div class=\"module-picker-footer\" x-show=\"hiddenCount > 0\"><span class=\"module-picker-more\" x-text=\"'+ ' + hiddenCount + ' more — keep typing to narrow'\"></span></div></div><script id=\"module-picker-data\" type=\"application/json\">\n\t\t\t@templ.Raw(PickerModulesJSON(modules))\n\t\t</script></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
