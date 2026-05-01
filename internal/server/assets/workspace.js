@@ -56,16 +56,13 @@ window.workspace = function () {
 	};
 };
 
-// Alpine 3 already attaches a MutationObserver that initializes
-// new x-data roots inserted via hx-boost body swaps; the explicit
-// htmx:afterSwap hook below is a defensive belt-and-suspenders
-// re-init in case Alpine's observer ever misses a swap (state on
-// the previous workspace instance is intentionally lost on
-// navigation; selection lives in the URL).
-if (typeof document !== 'undefined') {
-	document.body.addEventListener('htmx:afterSwap', function () {
-		if (window.Alpine && typeof window.Alpine.initTree === 'function') {
-			window.Alpine.initTree(document.body);
-		}
-	});
-}
+// Alpine 3's MutationObserver auto-initializes any x-data scopes
+// inserted into the DOM, so HTMX `beforeend` swaps (the chevron's
+// children-fragment fetch is the only htmx flow on this page after
+// hx-boost was removed) light up without further help.
+//
+// An earlier version called `Alpine.initTree(document.body)` from
+// htmx:afterSwap as a "defensive re-init" — but that re-evaluated
+// the parent row's `x-data="{ expanded: false, ... }"` initializer
+// after each fragment swap, resetting `expanded` to false and
+// hiding the just-appended children. Removed.
