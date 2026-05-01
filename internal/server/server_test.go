@@ -190,9 +190,9 @@ func TestOIDRedirect(t *testing.T) {
 func TestWorkspaceRoute(t *testing.T) {
 	ts := newTestServer(t)
 	cases := []struct {
-		name      string
-		path      string
-		wantCode  int
+		name       string
+		path       string
+		wantCode   int
 		wantInBody []string
 	}{
 		{"empty selection", "/m/IF-MIB", 200, []string{
