@@ -33,6 +33,19 @@ func moduleSourceURL(module string) templ.SafeURL {
 	return templ.SafeURL("/m/" + module + "/source")
 }
 
+// moduleDownloadURL returns the URL for the single-MIB download
+// endpoint. Module names are URL-safe per RFC 1212 §4.1.6 — no
+// encoding needed in practice — but `url.PathEscape` keeps the
+// surface consistent with the other URL builders.
+func moduleDownloadURL(module string) templ.SafeURL {
+	return templ.SafeURL("/m/" + url.PathEscape(module) + "/download")
+}
+
+// moduleBundleURL returns the URL for the bundle ZIP download.
+func moduleBundleURL(module string) templ.SafeURL {
+	return templ.SafeURL("/m/" + url.PathEscape(module) + "/download.zip")
+}
+
 // workspaceURL returns the URL for a workspace selection. SMI
 // module names are alphanumeric + dash and OIDs are digits + dot,
 // so neither input needs URL escaping.

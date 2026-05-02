@@ -2792,6 +2792,76 @@ main.page:has(.workspace-grid) .content-inner,
   text-decoration: none;
 }
 
+/* Download links in the module-info summary row — small, text-
+ * only, right of the imports count. `x-on:click.stop` on each
+ * link stops the click from bubbling to the surrounding
+ * `<summary>` and toggling the details element open/closed
+ * unintentionally. */
+.module-info-downloads {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+.module-info-download-link {
+  color: var(--accent);
+  text-decoration: none;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+}
+.module-info-download-link:hover {
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+  text-decoration: none;
+}
+.module-info-download-sep {
+  color: var(--fg-4);
+  user-select: none;
+}
+
+/* Download row inside the expanded body — labeled `DOWNLOAD`
+ * row matching the existing label / value cadence. Two
+ * prominent buttons; primary one (single MIB) gets the accent
+ * fill, secondary one (bundle) is the bordered variant. */
+.module-info-download-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.module-info-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 12px;
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  color: var(--fg-2);
+  transition: all 80ms ease;
+}
+.module-info-download-btn:hover {
+  border-color: color-mix(in oklch, var(--accent) 40%, transparent);
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+  color: var(--accent);
+  text-decoration: none;
+}
+.module-info-download-btn.primary {
+  border-color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.module-info-download-btn.primary:hover {
+  background: color-mix(in oklch, var(--accent) 28%, transparent);
+}
+
 /* Module imports — shown in the right pane's module-overview
  * (the unscoped workspace landing replaces the "Pick a symbol"
  * empty state with this). Each row groups the symbols imported

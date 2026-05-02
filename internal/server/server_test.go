@@ -1,6 +1,8 @@
 package server
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -74,7 +76,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 		t.Fatalf("seed store: %v", err)
 	}
 
-	s := New(st, "", "test", "/var/lib/blittermib/mibs")
+	s := New(st, "", "test", "/var/lib/blittermib/mibs", "/var/lib/blittermib/data/standard-mibs")
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return ts
@@ -287,6 +289,285 @@ func TestAPITreeFragmentMissingParent(t *testing.T) {
 	}
 }
 
+// downloadTestServer seeds a closure A → B → unloaded C with real
+// source files for A and B inside the test temp dir, returning the
+// httptest.Server bound to those paths as allowed roots.
+func downloadTestServer(t *testing.T) (*httptest.Server, string) {
+	t.Helper()
+	dir := t.TempDir()
+	mibsDir := filepath.Join(dir, "mibs")
+	stdDir := filepath.Join(dir, "data", "standard-mibs")
+	if err := os.MkdirAll(mibsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	aPath := filepath.Join(mibsDir, "A-MIB.txt")
+	if err := os.WriteFile(aPath, []byte("A-MIB DEFINITIONS ::= BEGIN\nimports b;\nEND\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bPath := filepath.Join(stdDir, "B-MIB")
+	if err := os.WriteFile(bPath, []byte("B-MIB DEFINITIONS ::= BEGIN\nimports c;\nEND\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	if err := st.ReplaceModule(context.Background(),
+		&model.Module{
+			Name:        "B-MIB",
+			SourcePath:  bPath,
+			ParseStatus: model.ParseStatusClean,
+			Imports:     []model.Import{{FromModule: "C-MIB", Symbol: "Counter32"}},
+		}, nil, nil, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReplaceModule(context.Background(),
+		&model.Module{
+			Name:        "A-MIB",
+			SourcePath:  aPath,
+			ParseStatus: model.ParseStatusClean,
+			Imports:     []model.Import{{FromModule: "B-MIB", Symbol: "ifIndex"}},
+		}, nil, nil, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(st, "", "test", mibsDir, stdDir)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return ts, dir
+}
+
+func TestModuleDownloadServesSource(t *testing.T) {
+	ts, _ := downloadTestServer(t)
+	resp, err := http.Get(ts.URL + "/m/A-MIB/download")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("content-type = %q, want text/plain", ct)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, `filename="A-MIB.mib"`) {
+		t.Errorf("content-disposition = %q, want filename A-MIB.mib", cd)
+	}
+	got := body(t, resp)
+	if !strings.Contains(got, "A-MIB DEFINITIONS") {
+		t.Errorf("body missing source content: %q", got)
+	}
+}
+
+func TestModuleDownloadPathTraversalRefused(t *testing.T) {
+	dir := t.TempDir()
+	mibsDir := filepath.Join(dir, "mibs")
+	stdDir := filepath.Join(dir, "data", "standard-mibs")
+	if err := os.MkdirAll(mibsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// SourcePath outside both roots — write a real file there so a
+	// missing guard would actually leak the bytes.
+	outsideDir := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(outsideDir, "EVIL-MIB.txt")
+	if err := os.WriteFile(bad, []byte("SECRET\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.ReplaceModule(context.Background(),
+		&model.Module{
+			Name:        "EVIL-MIB",
+			SourcePath:  bad,
+			ParseStatus: model.ParseStatusClean,
+		}, nil, nil, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(st, "", "test", mibsDir, stdDir)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/m/EVIL-MIB/download")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for path-traversal-guarded download", resp.StatusCode)
+	}
+	if got := body(t, resp); strings.Contains(got, "SECRET") {
+		t.Errorf("body leaked the unsafe file: %q", got)
+	}
+}
+
+func TestModuleDownloadBundleZip(t *testing.T) {
+	ts, _ := downloadTestServer(t)
+	resp, err := http.Get(ts.URL + "/m/A-MIB/download.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/zip" {
+		t.Errorf("content-type = %q, want application/zip", ct)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, `filename="A-MIB-bundle.zip"`) {
+		t.Errorf("content-disposition = %q", cd)
+	}
+
+	zipBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+	gotNames := make(map[string]bool)
+	for _, f := range zr.File {
+		gotNames[f.Name] = true
+	}
+	for _, want := range []string{"A-MIB.mib", "B-MIB.mib", "MISSING.txt"} {
+		if !gotNames[want] {
+			t.Errorf("zip missing entry %q (got %v)", want, gotNames)
+		}
+	}
+}
+
+func TestModuleDownloadBundleMissingImports(t *testing.T) {
+	ts, _ := downloadTestServer(t)
+	resp, err := http.Get(ts.URL + "/m/A-MIB/download.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	zipBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+	var missing string
+	for _, f := range zr.File {
+		if f.Name != "MISSING.txt" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf := new(strings.Builder)
+		if _, err := io.Copy(buf, rc); err != nil {
+			t.Fatal(err)
+		}
+		_ = rc.Close()
+		missing = buf.String()
+		break
+	}
+	if missing == "" {
+		t.Fatal("MISSING.txt not present in bundle")
+	}
+	for _, want := range []string{
+		"C-MIB",
+		"imported by: B-MIB",
+		"symbols:     Counter32",
+		"reason:      not loaded",
+	} {
+		if !strings.Contains(missing, want) {
+			t.Errorf("MISSING.txt missing %q\n--- contents ---\n%s", want, missing)
+		}
+	}
+}
+
+func TestModuleDownloadRouteDispatch(t *testing.T) {
+	ts, _ := downloadTestServer(t)
+	cases := []struct {
+		path     string
+		wantCode int
+	}{
+		{"/m/A-MIB/download", 200},
+		{"/m/A-MIB/download.zip", 200},
+		{"/m/A-MIB/source", 200},
+		{"/m/A-MIB/1.2.3", 200},          // workspace with missing-OID
+		{"/m/A-MIB/download/extra", 200}, // workspace with oid="download/extra"
+		{"/m/UNKNOWN/download", 404},
+		{"/m/UNKNOWN/download.zip", 404},
+	}
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			resp, err := http.Get(ts.URL + c.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != c.wantCode {
+				t.Errorf("%s status = %d, want %d", c.path, resp.StatusCode, c.wantCode)
+			}
+		})
+	}
+}
+
+func TestPathUnderAny(t *testing.T) {
+	dir := t.TempDir()
+	mibsDir := filepath.Join(dir, "mibs")
+	stdDir := filepath.Join(dir, "data", "standard-mibs")
+	if err := os.MkdirAll(mibsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	roots := []string{stdDir, mibsDir}
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"empty path", "", false},
+		{"under user mibs dir", filepath.Join(mibsDir, "IF-MIB.txt"), true},
+		{"under standard-mibs dir", filepath.Join(stdDir, "SNMPv2-SMI"), true},
+		{"exact root match", mibsDir, true},
+		{"sibling of root", filepath.Join(dir, "elsewhere", "evil.mib"), false},
+		{"escape via ../", filepath.Join(mibsDir, "..", "elsewhere", "evil.mib"), false},
+		{"absolute outside roots", "/etc/passwd", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pathUnderAny(tt.path, roots); got != tt.want {
+				t.Errorf("pathUnderAny(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+
+	// Empty roots are skipped — having a single empty root in the
+	// list MUST NOT be treated as "everything is under root".
+	if pathUnderAny("/etc/passwd", []string{""}) {
+		t.Error("empty root accepted /etc/passwd")
+	}
+}
+
 func TestSourceURLGuard(t *testing.T) {
 	// Phase 4: the source endpoint is exactly `/m/{name}/source`.
 	// An embedded OID before `/source` (e.g. /m/IF-MIB/1.2.3/source)
@@ -340,7 +621,7 @@ func TestWorkspaceEmptyModulePill(t *testing.T) {
 		nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	srv := New(st, "", "test", "/var/lib/blittermib/mibs")
+	srv := New(st, "", "test", "/var/lib/blittermib/mibs", "/var/lib/blittermib/data/standard-mibs")
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -677,7 +958,7 @@ func TestLandingEmptyState(t *testing.T) {
 		t.Fatalf("OpenInMemory: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	s := New(st, "", "test", "/srv/mibs")
+	s := New(st, "", "test", "/srv/mibs", "/srv/data/standard-mibs")
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 
@@ -918,7 +1199,7 @@ func TestSymbolPlainLanguageSummaryFallback(t *testing.T) {
 		}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	srv := New(st, "", "test", "/var/lib/blittermib/mibs")
+	srv := New(st, "", "test", "/var/lib/blittermib/mibs", "/var/lib/blittermib/data/standard-mibs")
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -977,7 +1258,7 @@ func TestSymbolDisambiguationChooser(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	srv := New(st, "", "test", "/var/lib/blittermib/mibs")
+	srv := New(st, "", "test", "/var/lib/blittermib/mibs", "/var/lib/blittermib/data/standard-mibs")
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -1032,7 +1313,7 @@ func TestModuleSourceRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := New(st, "", "test", "/var/lib/blittermib/mibs")
+	srv := New(st, "", "test", "/var/lib/blittermib/mibs", "/var/lib/blittermib/data/standard-mibs")
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 

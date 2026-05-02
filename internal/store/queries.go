@@ -62,6 +62,141 @@ func (s *Store) listImportsByModule(ctx context.Context, module string) ([]model
 	return out, rows.Err()
 }
 
+// ClosureEntry is one node in a module's transitive IMPORTS closure.
+//
+// `Loaded` distinguishes "this module is in the store, with a real
+// source file at SourcePath" (true) from "this module name appears
+// in some IMPORTS clause but no `module` row exists" (false). The
+// false case feeds the bundle download's MISSING.txt manifest so
+// the user can see exactly what wasn't included.
+//
+// `ImportedBy` carries the chain of modules that pulled this one
+// in (the immediate first-discovered importer; not the full chain
+// of ancestors). For closure entries discovered as the root, this
+// is empty.
+//
+// `Symbols` carries the symbol names imported FROM this module by
+// the immediate importer (`ImportedBy`). For unloaded entries this
+// helps the user understand what they'd lose by not fetching it.
+type ClosureEntry struct {
+	Module     string
+	SourcePath string
+	Loaded     bool
+	ImportedBy string
+	Symbols    []string
+}
+
+// ListImportClosure walks the IMPORTS graph rooted at `root` and
+// returns one entry per distinct module reachable. Order is BFS:
+// root first, then its direct imports in source order, then their
+// imports, and so on. Cycles are bounded by an in-walk visited
+// set (SMI forbids cycles by spec; defensive against malformed
+// input).
+//
+// One DB round-trip per loaded module visited (1 GetModule + 1
+// listImportsByModule each). For typical enterprise MIBs that's
+// 5–15 trips; sub-millisecond on local SQLite. A recursive CTE
+// would collapse to one query if profiling shows it as hot.
+func (s *Store) ListImportClosure(ctx context.Context, root string) ([]ClosureEntry, error) {
+	visited := make(map[string]struct{})
+	var out []ClosureEntry
+
+	rootMod, err := s.GetModule(ctx, root)
+	if err != nil {
+		return nil, fmt.Errorf("closure root %s: %w", root, err)
+	}
+	visited[rootMod.Name] = struct{}{}
+	out = append(out, ClosureEntry{
+		Module:     rootMod.Name,
+		SourcePath: rootMod.SourcePath,
+		Loaded:     true,
+	})
+
+	// Frontier holds names whose imports we still need to walk.
+	type frontierEntry struct {
+		name       string
+		importedBy string
+	}
+	frontier := []frontierEntry{{name: rootMod.Name}}
+
+	// Per-importer aggregation of imported symbols, so MISSING.txt
+	// can list `(symbols: A, B, C)` rather than one row per symbol.
+	type pendingImport struct {
+		fromModule string
+		importedBy string
+		symbols    []string
+	}
+	pendings := make(map[string]*pendingImport)
+
+	pkey := func(fromModule, importedBy string) string {
+		return fromModule + "\x00" + importedBy
+	}
+
+	for len(frontier) > 0 {
+		cur := frontier[0]
+		frontier = frontier[1:]
+
+		imports, err := s.listImportsByModule(ctx, cur.name)
+		if err != nil {
+			return nil, fmt.Errorf("closure imports of %s: %w", cur.name, err)
+		}
+		for _, imp := range imports {
+			k := pkey(imp.FromModule, cur.name)
+			p, ok := pendings[k]
+			if !ok {
+				p = &pendingImport{
+					fromModule: imp.FromModule,
+					importedBy: cur.name,
+				}
+				pendings[k] = p
+			}
+			p.symbols = append(p.symbols, imp.Symbol)
+		}
+
+		// Process pendings in source order — iterate `imports`
+		// again to keep ordering stable, but only act on the first
+		// occurrence per (fromModule, importedBy) pair.
+		seenInThisCur := make(map[string]struct{})
+		for _, imp := range imports {
+			if _, dup := seenInThisCur[imp.FromModule]; dup {
+				continue
+			}
+			seenInThisCur[imp.FromModule] = struct{}{}
+
+			if _, dup := visited[imp.FromModule]; dup {
+				continue
+			}
+			visited[imp.FromModule] = struct{}{}
+
+			p := pendings[pkey(imp.FromModule, cur.name)]
+
+			depMod, err := s.GetModule(ctx, imp.FromModule)
+			switch {
+			case errors.Is(err, ErrNotFound):
+				out = append(out, ClosureEntry{
+					Module:     imp.FromModule,
+					Loaded:     false,
+					ImportedBy: cur.name,
+					Symbols:    p.symbols,
+				})
+			case err != nil:
+				return nil, fmt.Errorf("closure dep %s: %w", imp.FromModule, err)
+			default:
+				out = append(out, ClosureEntry{
+					Module:     depMod.Name,
+					SourcePath: depMod.SourcePath,
+					Loaded:     true,
+					ImportedBy: cur.name,
+					Symbols:    p.symbols,
+				})
+				frontier = append(frontier, frontierEntry{name: depMod.Name, importedBy: cur.name})
+			}
+		}
+	}
+
+	return out, nil
+}
+
 // ListModules returns all modules ordered by name.
 func (s *Store) ListModules(ctx context.Context) ([]model.Module, error) {
 	rows, err := s.db.QueryContext(ctx, `

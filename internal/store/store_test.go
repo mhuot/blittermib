@@ -561,3 +561,139 @@ func TestOIDPathDeterministicOrdering(t *testing.T) {
 		t.Errorf("multi-match resolved to %q, want A-MIB (alphabetical)", last.Module)
 	}
 }
+
+// TestListImportClosure seeds a small graph A → B → C and an
+// unloaded D imported by B; closure walk from A should return
+// four entries (A, B, C, D), with D marked Loaded=false and
+// carrying the symbols B imported from it.
+func TestListImportClosure(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	// C — leaf, no imports
+	if err := s.ReplaceModule(ctx,
+		&model.Module{Name: "C-MIB", SourcePath: "/m/C-MIB", ParseStatus: model.ParseStatusClean},
+		nil, nil, nil,
+	); err != nil {
+		t.Fatalf("seed C: %v", err)
+	}
+
+	// B — imports from C and from unloaded D
+	if err := s.ReplaceModule(ctx,
+		&model.Module{
+			Name:        "B-MIB",
+			SourcePath:  "/m/B-MIB",
+			ParseStatus: model.ParseStatusClean,
+			Imports: []model.Import{
+				{FromModule: "C-MIB", Symbol: "Counter32"},
+				{FromModule: "D-MIB", Symbol: "TimeTicks"},
+				{FromModule: "D-MIB", Symbol: "Gauge32"},
+			},
+		},
+		nil, nil, nil,
+	); err != nil {
+		t.Fatalf("seed B: %v", err)
+	}
+
+	// A — imports from B only
+	if err := s.ReplaceModule(ctx,
+		&model.Module{
+			Name:        "A-MIB",
+			SourcePath:  "/m/A-MIB",
+			ParseStatus: model.ParseStatusClean,
+			Imports: []model.Import{
+				{FromModule: "B-MIB", Symbol: "ifIndex"},
+			},
+		},
+		nil, nil, nil,
+	); err != nil {
+		t.Fatalf("seed A: %v", err)
+	}
+
+	closure, err := s.ListImportClosure(ctx, "A-MIB")
+	if err != nil {
+		t.Fatalf("ListImportClosure: %v", err)
+	}
+
+	// BFS order: A, then A's imports (B), then B's imports (C, D).
+	if len(closure) != 4 {
+		t.Fatalf("closure size = %d, want 4: %+v", len(closure), closure)
+	}
+
+	want := []struct {
+		Module     string
+		Loaded     bool
+		ImportedBy string
+		Symbols    []string
+	}{
+		{"A-MIB", true, "", nil},
+		{"B-MIB", true, "A-MIB", []string{"ifIndex"}},
+		{"C-MIB", true, "B-MIB", []string{"Counter32"}},
+		{"D-MIB", false, "B-MIB", []string{"TimeTicks", "Gauge32"}},
+	}
+	for i, w := range want {
+		got := closure[i]
+		if got.Module != w.Module {
+			t.Errorf("closure[%d].Module = %q, want %q", i, got.Module, w.Module)
+		}
+		if got.Loaded != w.Loaded {
+			t.Errorf("closure[%d].Loaded = %v, want %v", i, got.Loaded, w.Loaded)
+		}
+		if got.ImportedBy != w.ImportedBy {
+			t.Errorf("closure[%d].ImportedBy = %q, want %q", i, got.ImportedBy, w.ImportedBy)
+		}
+		if len(got.Symbols) != len(w.Symbols) {
+			t.Errorf("closure[%d].Symbols length = %d, want %d (%+v)", i, len(got.Symbols), len(w.Symbols), got.Symbols)
+		} else {
+			for j := range got.Symbols {
+				if got.Symbols[j] != w.Symbols[j] {
+					t.Errorf("closure[%d].Symbols[%d] = %q, want %q", i, j, got.Symbols[j], w.Symbols[j])
+				}
+			}
+		}
+	}
+
+	// Loaded entries should carry SourcePath; unloaded should not.
+	if closure[0].SourcePath != "/m/A-MIB" || closure[3].SourcePath != "" {
+		t.Errorf("SourcePath wiring wrong: %+v / %+v", closure[0], closure[3])
+	}
+}
+
+// TestListImportClosureCycle defends against a malformed input
+// where two modules import each other (forbidden by SMI but
+// possible if the parser ever lets one through). Must not loop.
+func TestListImportClosureCycle(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	if err := s.ReplaceModule(ctx,
+		&model.Module{
+			Name:        "P-MIB",
+			SourcePath:  "/m/P-MIB",
+			ParseStatus: model.ParseStatusClean,
+			Imports:     []model.Import{{FromModule: "Q-MIB", Symbol: "x"}},
+		},
+		nil, nil, nil,
+	); err != nil {
+		t.Fatalf("seed P: %v", err)
+	}
+	if err := s.ReplaceModule(ctx,
+		&model.Module{
+			Name:        "Q-MIB",
+			SourcePath:  "/m/Q-MIB",
+			ParseStatus: model.ParseStatusClean,
+			Imports:     []model.Import{{FromModule: "P-MIB", Symbol: "y"}},
+		},
+		nil, nil, nil,
+	); err != nil {
+		t.Fatalf("seed Q: %v", err)
+	}
+
+	closure, err := s.ListImportClosure(ctx, "P-MIB")
+	if err != nil {
+		t.Fatalf("ListImportClosure: %v", err)
+	}
+	if len(closure) != 2 {
+		t.Errorf("cycle should still produce 2 entries (P, Q), got %d: %+v", len(closure), closure)
+	}
+}

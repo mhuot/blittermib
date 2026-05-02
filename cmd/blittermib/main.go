@@ -172,7 +172,7 @@ func run(cfg config) error {
 		}
 	}()
 
-	srv := server.New(st, cfg.listen, version, cfg.mibsDir)
+	srv := server.New(st, cfg.listen, version, cfg.mibsDir, standardDir)
 	err = srv.Start(ctx)
 	wg.Wait()
 

@@ -39,7 +39,7 @@ templ Workspace(view *WorkspaceView) {
 // has nothing to show (no description, no organization, no
 // imports) so an empty bar isn't drawn.
 templ moduleInfoBar(mod *model.Module) {
-	if mod != nil && (mod.Description != "" || mod.Organization != "" || len(mod.Imports) > 0) {
+	if mod != nil && (mod.Description != "" || mod.Organization != "" || len(mod.Imports) > 0 || mod.SourcePath != "") {
 		<details class="module-info">
 			<summary class="module-info-summary">
 				<span class="module-info-chevron" aria-hidden="true">▸</span>
@@ -55,6 +55,17 @@ templ moduleInfoBar(mod *model.Module) {
 						<strong>{ fmt.Sprintf("%d", len(mod.Imports)) }</strong> imports
 					}
 				</span>
+				if mod.SourcePath != "" {
+					<span class="module-info-downloads">
+						<a class="module-info-download-link" href={ moduleDownloadURL(mod.Name) }
+							title={ "Download " + mod.Name + ".mib" }
+							x-on:click.stop>↓ MIB</a>
+						<span class="module-info-download-sep" aria-hidden="true">·</span>
+						<a class="module-info-download-link" href={ moduleBundleURL(mod.Name) }
+							title={ "Download " + mod.Name + " plus its imports as a ZIP bundle" }
+							x-on:click.stop>↓ bundle ({ fmt.Sprintf("%d", len(mod.Imports)+1) })</a>
+					</span>
+				}
 			</summary>
 			<div class="module-info-body">
 				if mod.Description != "" {
@@ -82,6 +93,17 @@ templ moduleInfoBar(mod *model.Module) {
 								</div>
 							</div>
 						}
+					</div>
+				}
+				if mod.SourcePath != "" {
+					<span class="module-info-label">Download</span>
+					<div class="module-info-download-row">
+						<a class="module-info-download-btn primary" href={ moduleDownloadURL(mod.Name) }>
+							↓ { mod.Name }.mib
+						</a>
+						<a class="module-info-download-btn" href={ moduleBundleURL(mod.Name) }>
+							↓ { mod.Name }-bundle.zip ({ fmt.Sprintf("%d", len(mod.Imports)+1) } files)
+						</a>
 					</div>
 				}
 			</div>

@@ -1,12 +1,18 @@
 package server
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/a-h/templ"
 
@@ -15,6 +21,61 @@ import (
 	"github.com/no42-org/blittermib/internal/store"
 	"github.com/no42-org/blittermib/internal/web"
 )
+
+// pathUnderAny reports whether the absolute form of `p` lives at
+// or under the absolute form of any of `roots`. Empty `p` and
+// empty roots are rejected; resolving `.` ancestor segments is
+// handled by `filepath.Abs` + `filepath.Rel`.
+//
+// Used by the module-download endpoints as a defense-in-depth
+// guard against any future writer that might let a module's
+// `source_path` be set to an arbitrary file. Today libsmi only
+// reports paths under the configured MIB roots, but this guard
+// shrinks the blast radius of a regression.
+func pathUnderAny(p string, roots []string) bool {
+	if p == "" {
+		return false
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return false
+	}
+	for _, r := range roots {
+		if r == "" {
+			continue
+		}
+		rabs, err := filepath.Abs(r)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(rabs, abs)
+		if err != nil {
+			continue
+		}
+		if rel == "." {
+			return true
+		}
+		if !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
+			// Reject `..` segments at any position — `..foo`
+			// could be a legitimate child name, but `../x` or
+			// `../../x` is an escape attempt. Easiest way to
+			// rule those out cleanly: ensure no path component
+			// equals literal "..".
+			parts := strings.Split(filepath.ToSlash(rel), "/")
+			escapes := false
+			for _, part := range parts {
+				if part == ".." {
+					escapes = true
+					break
+				}
+			}
+			if !escapes {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // validModuleName reports whether s matches the SMI module-name
 // grammar from RFC 1212 §4.1.6 / RFC 2578 §3.1: leading letter
@@ -100,8 +161,15 @@ func (s *Server) handleModule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name, tail := rest[:i], rest[i+1:]
-	if tail == "source" {
+	switch tail {
+	case "source":
 		s.handleModuleSource(w, r, name)
+		return
+	case "download":
+		s.handleModuleDownload(w, r, name)
+		return
+	case "download.zip":
+		s.handleModuleBundle(w, r, name)
 		return
 	}
 	s.handleWorkspace(w, r, name, tail)
@@ -133,6 +201,188 @@ func (s *Server) handleModuleSource(w http.ResponseWriter, r *http.Request, name
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeFile(w, r, mod.SourcePath)
+}
+
+// handleModuleDownload serves the single MIB source file as a
+// `text/plain` attachment named `{name}.mib`. The filename uses
+// the module name (rather than the on-disk basename) because the
+// embedded bundle stages files without extensions
+// (`{data}/standard-mibs/IF-MIB`); `IF-MIB.mib` is what
+// downstream tools (`smilint`, `snmptranslate`) expect.
+//
+// The path-traversal guard is the only difference from
+// `handleModuleSource` beyond headers — `mod.SourcePath` came
+// from the parser, which traces back to one of the configured
+// roots, but a future writer (API ingest, migration tool) could
+// regress that guarantee. 404 on miss matches the
+// "module not found" outcome rather than leaking that the path
+// existed but was unsafe.
+func (s *Server) handleModuleDownload(w http.ResponseWriter, r *http.Request, name string) {
+	mod, err := s.store.GetModule(r.Context(), name)
+	if errors.Is(err, store.ErrNotFound) {
+		s.notFound(w, r)
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if mod.SourcePath == "" {
+		s.notFound(w, r)
+		return
+	}
+	if !pathUnderAny(mod.SourcePath, []string{s.standardMibsDir, s.mibsDir}) {
+		s.notFound(w, r)
+		return
+	}
+	if _, err := os.Stat(mod.SourcePath); err != nil {
+		// File recorded in DB but gone from disk — distinguish
+		// from "module never existed" so the user can see what
+		// happened.
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusGone)
+		_, _ = w.Write([]byte("module source no longer readable\nrecorded path: " + mod.SourcePath + "\n"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, mod.Name+".mib"))
+	http.ServeFile(w, r, mod.SourcePath)
+}
+
+// handleModuleBundle streams a ZIP containing the module + its
+// transitive IMPORTS closure. Layout is flat — one
+// `{ModuleName}.mib` per loaded module — with an optional
+// `MISSING.txt` manifest at the root listing closure entries
+// that could not be resolved (never loaded, or loaded with a
+// source file that has since gone unreadable).
+//
+// `archive/zip` writes directly to the ResponseWriter, so the
+// transfer streams without buffering. The trade-off is that
+// once `WriteHeader(200)` ships, an error mid-walk produces a
+// truncated ZIP — we log and let the client see CRC failures on
+// extract rather than send a 5xx mid-body. Filesystem read
+// errors on already-staged MIBs are rare in practice.
+func (s *Server) handleModuleBundle(w http.ResponseWriter, r *http.Request, name string) {
+	ctx := r.Context()
+	closure, err := s.store.ListImportClosure(ctx, name)
+	if errors.Is(err, store.ErrNotFound) {
+		s.notFound(w, r)
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+
+	roots := []string{s.standardMibsDir, s.mibsDir}
+
+	// Partition into "ship in the ZIP" vs "list in MISSING.txt".
+	type shipEntry struct {
+		Module     string
+		SourcePath string
+	}
+	type missing struct {
+		Module     string
+		Reason     string
+		ImportedBy string
+		Symbols    []string
+	}
+	var shippable []shipEntry
+	var missings []missing
+	for _, e := range closure {
+		if !e.Loaded {
+			missings = append(missings, missing{
+				Module:     e.Module,
+				Reason:     "not loaded",
+				ImportedBy: e.ImportedBy,
+				Symbols:    e.Symbols,
+			})
+			continue
+		}
+		if e.SourcePath == "" || !pathUnderAny(e.SourcePath, roots) {
+			missings = append(missings, missing{
+				Module:     e.Module,
+				Reason:     "source path unavailable",
+				ImportedBy: e.ImportedBy,
+				Symbols:    e.Symbols,
+			})
+			continue
+		}
+		shippable = append(shippable, shipEntry{
+			Module:     e.Module,
+			SourcePath: e.SourcePath,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, name+"-bundle.zip"))
+
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+
+	now := time.Now()
+	for _, ship := range shippable {
+		f, err := os.Open(ship.SourcePath)
+		if err != nil {
+			slog.Warn("bundle: open source", "module", ship.Module, "path", ship.SourcePath, "err", err)
+			missings = append(missings, missing{
+				Module: ship.Module,
+				Reason: "source file unreadable",
+			})
+			continue
+		}
+		hdr := &zip.FileHeader{
+			Name:     ship.Module + ".mib",
+			Method:   zip.Deflate,
+			Modified: now,
+		}
+		fw, err := zw.CreateHeader(hdr)
+		if err != nil {
+			slog.Warn("bundle: zip header", "module", ship.Module, "err", err)
+			_ = f.Close()
+			return
+		}
+		if _, err := io.Copy(fw, f); err != nil {
+			slog.Warn("bundle: copy source", "module", ship.Module, "err", err)
+			_ = f.Close()
+			return
+		}
+		_ = f.Close()
+	}
+
+	if len(missings) > 0 {
+		hdr := &zip.FileHeader{
+			Name:     "MISSING.txt",
+			Method:   zip.Deflate,
+			Modified: now,
+		}
+		fw, err := zw.CreateHeader(hdr)
+		if err != nil {
+			slog.Warn("bundle: zip header MISSING.txt", "err", err)
+			return
+		}
+		var buf strings.Builder
+		fmt.Fprintf(&buf, "# Missing imports — modules referenced by %s and its dependencies\n", name)
+		fmt.Fprintln(&buf, "# but not currently loaded into blittermib (or whose source")
+		fmt.Fprintln(&buf, "# files were unreadable at download time).")
+		fmt.Fprintf(&buf, "# Generated: %s\n", now.UTC().Format("2006-01-02 15:04:05 MST"))
+		fmt.Fprintf(&buf, "# Root module: %s\n\n", name)
+		for _, m := range missings {
+			fmt.Fprintf(&buf, "%s\n", m.Module)
+			if m.ImportedBy != "" {
+				fmt.Fprintf(&buf, "  imported by: %s\n", m.ImportedBy)
+			}
+			if len(m.Symbols) > 0 {
+				fmt.Fprintf(&buf, "  symbols:     %s\n", strings.Join(m.Symbols, ", "))
+			}
+			fmt.Fprintf(&buf, "  reason:      %s\n\n", m.Reason)
+		}
+		if _, err := io.WriteString(fw, buf.String()); err != nil {
+			slog.Warn("bundle: write MISSING.txt", "err", err)
+			return
+		}
+	}
 }
 
 func (s *Server) handleModuleIndex(w http.ResponseWriter, r *http.Request) {
