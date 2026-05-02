@@ -704,6 +704,23 @@ type WorkspaceView struct {
 	ScopeOID string
 }
 
+// moduleSummaryPreview returns the first-sentence preview of a
+// module's description for the collapsed module-info bar, capped
+// at ~120 chars so the summary line stays single-row even on
+// narrow displays. Reuses the same first-sentence + word-boundary
+// truncation as `SummarizeSymbol`.
+func moduleSummaryPreview(desc string) string {
+	d := strings.TrimSpace(collapseWhitespace(desc))
+	if d == "" {
+		return ""
+	}
+	first := firstSentence(d)
+	if utf8Count(first) > 120 {
+		first = truncateWord(first, 120) + "…"
+	}
+	return first
+}
+
 // SummarizeSymbol produces the one-sentence plain-language lede that
 // sits between the symbol name and its OID on the symbol page —
 // design.md's "novel for this product" entry-point line.

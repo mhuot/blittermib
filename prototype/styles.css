@@ -2644,6 +2644,154 @@ main.page:has(.workspace-grid) .content-inner,
   font-variant-numeric: tabular-nums;
 }
 
+/* Module-info bar — collapsible row between the status bar and
+ * the workspace grid. Native `<details>` element; summary is
+ * always visible (one-line preview + imports count), body
+ * expands on click for the full description / organization /
+ * imports list. Lets the user reach module metadata without
+ * having to clear their symbol selection. */
+.module-info {
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--line);
+  padding: 8px 18px;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+.module-info[open] {
+  background: var(--bg);
+  padding-bottom: 14px;
+}
+.module-info-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.module-info-summary::-webkit-details-marker { display: none; }
+.module-info-chevron {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--fg-4);
+  transition: transform 120ms ease;
+  display: inline-block;
+  transform-origin: 50% 60%;
+}
+.module-info[open] .module-info-chevron {
+  transform: rotate(90deg);
+}
+.module-info-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-2);
+}
+.module-info-preview.muted { color: var(--fg-4); }
+.module-info[open] .module-info-preview {
+  color: var(--fg-3);
+  /* Once expanded, the preview line is just a recap; let the
+   * full body do the heavy lifting. */
+  font-style: italic;
+}
+.module-info-stats {
+  flex-shrink: 0;
+  color: var(--fg-3);
+  font-size: 11px;
+}
+.module-info-stats strong {
+  color: var(--fg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin-right: 2px;
+}
+.module-info-body {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 10px 18px;
+  align-items: baseline;
+}
+.module-info-label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.10em;
+  color: var(--fg-3);
+  align-self: start;
+  padding-top: 2px;
+}
+.module-info-text {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg-2);
+  max-width: 80ch;
+}
+.module-info-imports {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+}
+.module-info-imports .imports-group {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: 8px 10px;
+  align-items: baseline;
+  border-bottom: 1px solid var(--line-soft);
+  padding: 4px 0;
+}
+.module-info-imports .imports-group:last-child { border-bottom: 0; }
+.module-info-imports .imports-source {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 1px 4px;
+  border-radius: 3px;
+  align-self: start;
+  word-break: break-word;
+}
+.module-info-imports .imports-source:hover {
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+  text-decoration: none;
+}
+.module-info-imports .imports-symbols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.module-info-imports .imports-symbol {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  color: var(--fg-2);
+  text-decoration: none;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg-elev);
+}
+.module-info-imports .imports-symbol code { font-family: inherit; }
+.module-info-imports .imports-symbol:hover {
+  color: var(--accent);
+  border-color: color-mix(in oklch, var(--accent) 40%, transparent);
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+  text-decoration: none;
+}
+
 /* Module imports — shown in the right pane's module-overview
  * (the unscoped workspace landing replaces the "Pick a symbol"
  * empty state with this). Each row groups the symbols imported
