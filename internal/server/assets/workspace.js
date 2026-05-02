@@ -6,18 +6,46 @@
 // browser executes us first because we appear earlier in <head>.
 //
 // State held here is the *interactive* layer:
-//   - filter: string for the center-pane symbol-list filter input
+//   - filter:     transient text-search query for the list pane
+//   - kindFilter: which kind-chip is active (all / scalar / table
+//                 / notif). Persisted in sessionStorage so the
+//                 chip stays selected as the user clicks through
+//                 rows; the workspace shell is rebuilt on every
+//                 navigation now that hx-boost is gone, and Alpine
+//                 x-data otherwise resets to its default.
 //
-// Selection state lives in the URL (/m/{name}/{oid}) — that's
-// authoritative, deep-linkable, and survives reload without any
-// JS. Tree-expanded state is also intentionally ephemeral; the
-// HTMX tree-fragment endpoint streams children when the user
-// expands a chevron and the in-page DOM holds them until the next
-// navigation.
+// Selection / scope live in the URL (/m/{name}/{scope}?sel=…).
+// Tree-expanded state is server-driven (auto-expand pass).
+var KIND_FILTER_KEY = 'blittermib-kind-filter';
+var KIND_FILTER_VALUES = { all: 1, scalar: 1, table: 1, notif: 1 };
+
+function loadKindFilter() {
+	try {
+		var v = sessionStorage.getItem(KIND_FILTER_KEY);
+		return v && KIND_FILTER_VALUES[v] ? v : 'all';
+	} catch (e) {
+		return 'all';
+	}
+}
+
+function saveKindFilter(v) {
+	try {
+		sessionStorage.setItem(KIND_FILTER_KEY, v);
+	} catch (e) {
+		// SessionStorage can throw in private-mode Safari and quota
+		// edge cases; the chip still works in-memory, persistence
+		// just degrades to per-page.
+	}
+}
+
 window.workspace = function () {
 	return {
 		filter: '',
-		kindFilter: 'all',
+		kindFilter: loadKindFilter(),
+
+		init() {
+			this.$watch('kindFilter', (v) => saveKindFilter(v));
+		},
 
 		// matchesKind reads `data-kind` from the row and answers
 		// "is this row visible under the current kind chip?" Family
