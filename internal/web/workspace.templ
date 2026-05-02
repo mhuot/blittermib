@@ -306,17 +306,20 @@ templ workspaceList(view *WorkspaceView, rows []model.Symbol, selectedOID string
 		<tbody>
 			for _, s := range rows {
 				{{ oidPre, oidLast := SplitOIDLast(s.OID) }}
+				{{ rowURL := WorkspaceRowURL(view, &s) }}
 				<tr
 					class={ "list-row " + FamilyClass(&s), templ.KV("selected", selectedOID != "" && s.OID == selectedOID) }
 					data-name={ s.Name }
 					data-oid={ s.OID }
 					data-kind={ string(s.Kind) }
-					x-show="matchesRow($el)">
+					data-href={ string(rowURL) }
+					x-show="matchesRow($el)"
+					x-on:click="if (!$event.target.closest('a, button')) { window.location = $el.dataset.href }">
 					<td class="list-cell-badge">
 						<span class="tlet" aria-hidden="true">{ TypeLetter(&s) }</span>
 					</td>
 					<td class="list-cell-name">
-						<a href={ WorkspaceRowURL(view, &s) }>
+						<a href={ rowURL }>
 							<code>
 								@templ.Raw(SplitNameHTML(s.Name))
 							</code>
