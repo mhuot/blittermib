@@ -16,6 +16,32 @@ import (
 	"github.com/no42-org/blittermib/internal/web"
 )
 
+// validModuleName reports whether s matches the SMI module-name
+// grammar from RFC 1212 §4.1.6 / RFC 2578 §3.1: leading letter
+// followed by letters / digits / hyphens. Used to gate echoed
+// query params before they flow into rendered URLs.
+func validModuleName(s string) bool {
+	if s == "" {
+		return false
+	}
+	c := s[0]
+	if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+		case c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9':
+		case c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // --- ops endpoints ---------------------------------------------------
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -630,7 +656,18 @@ func (s *Server) expandTreeRow(ctx context.Context, row *web.TreeRow, expandSet 
 	row.Expanded = true
 
 	children, err := s.store.ListChildren(ctx, row.Symbol.OID)
-	if err != nil || len(children) == 0 {
+	if err != nil {
+		// Degrade gracefully: leave the row collapsed so the
+		// chevron's HTMX click can retry. Setting Expanded=false
+		// also forces TreeRowAlpineState to bake `loaded:false`
+		// into the row's x-data, which is what makes the retry
+		// path fire — leaving Expanded=true after a failure
+		// would brick the row (loaded:true skips the fetch).
+		slog.Warn("auto-expand: list children failed", "oid", row.Symbol.OID, "err", err)
+		row.Expanded = false
+		return
+	}
+	if len(children) == 0 {
 		return
 	}
 	seen := make(map[string]struct{}, len(children))
@@ -650,6 +687,8 @@ func (s *Server) expandTreeRow(ctx context.Context, row *web.TreeRow, expandSet 
 	}
 	hasChildren, err := s.store.HasChildrenBatch(ctx, parentOIDs)
 	if err != nil {
+		slog.Warn("auto-expand: has-children batch failed", "oid", row.Symbol.OID, "err", err)
+		row.Expanded = false
 		return
 	}
 
@@ -690,8 +729,22 @@ func (s *Server) handleAPITreeFragment(w http.ResponseWriter, r *http.Request) {
 		s.notFound(w, r)
 		return
 	}
+	// `module` / `scope` are echoed back into the rendered fragment's
+	// URLs via WorkspaceRowURL. Validate against the SMI grammars
+	// (RFC 1212 §4.1.6 / RFC 2578 §3.1 for module names; digits +
+	// dots for OIDs) before threading through — otherwise an
+	// attacker-controlled query value flows into href / data-*
+	// attributes. Invalid values degrade silently to empty (the
+	// fragment still renders, just without the leaf-vs-container
+	// scope-preserving URLs).
 	module := strings.TrimSpace(r.URL.Query().Get("module"))
+	if !validModuleName(module) {
+		module = ""
+	}
 	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+	if !web.SelectorLooksLikeOID(scope) {
+		scope = ""
+	}
 	ctx := r.Context()
 	children, err := s.store.ListChildren(ctx, parent)
 	if err != nil {

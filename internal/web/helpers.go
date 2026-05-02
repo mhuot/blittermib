@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"net/url"
 	"strconv"
 	"strings"
 	"unicode"
@@ -109,8 +110,10 @@ func KindHasChildren(k model.SymbolKind) bool {
 //     user to the canonical `/s/{module}::{name}` page (which loses
 //     the workspace chrome and the navigation context).
 func WorkspaceRowURL(view *WorkspaceView, s *model.Symbol) templ.SafeURL {
+	module := viewModuleName(view)
+	scope := viewScopeOID(view)
 	if s == nil {
-		return moduleURL(view.Module.Name)
+		return moduleURL(module)
 	}
 	// Leaves (and no-OID symbols) NEVER scope-change. They preserve
 	// the current scope and ride in via `?sel=…`; if no scope is
@@ -120,31 +123,52 @@ func WorkspaceRowURL(view *WorkspaceView, s *model.Symbol) templ.SafeURL {
 	// "browse onward" workflow — clicking a column / notification /
 	// textual convention should never strand the user on an empty
 	// list pane.
+	//
+	// All path / query components go through `url.PathEscape` /
+	// `url.QueryEscape`. SMI module names and OIDs are URL-safe in
+	// practice, but `templ.SafeURL` bypasses templ's HTML-escape on
+	// href attributes — any byte that breaks attribute quoting (the
+	// rare malformed MIB with a stray space, ampersand, or quote in
+	// a name) would otherwise inject markup. Defense in depth.
 	if s.OID == "" {
-		if view != nil && view.ScopeOID != "" {
-			return templ.SafeURL("/m/" + view.Module.Name + "/" + view.ScopeOID + "?sel=" + s.Name)
+		if scope != "" {
+			return templ.SafeURL("/m/" + url.PathEscape(module) + "/" + url.PathEscape(scope) + "?sel=" + url.QueryEscape(s.Name))
 		}
-		return templ.SafeURL("/m/" + view.Module.Name + "?sel=" + s.Name)
+		return templ.SafeURL("/m/" + url.PathEscape(module) + "?sel=" + url.QueryEscape(s.Name))
 	}
 	if !KindHasChildren(s.Kind) {
-		if view != nil && view.ScopeOID != "" {
-			return templ.SafeURL("/m/" + view.Module.Name + "/" + view.ScopeOID + "?sel=" + s.OID)
+		if scope != "" {
+			return templ.SafeURL("/m/" + url.PathEscape(module) + "/" + url.PathEscape(scope) + "?sel=" + url.QueryEscape(s.OID))
 		}
-		return templ.SafeURL("/m/" + view.Module.Name + "?sel=" + s.OID)
+		return templ.SafeURL("/m/" + url.PathEscape(module) + "?sel=" + url.QueryEscape(s.OID))
 	}
 	// Container — drill in (scope change).
-	return workspaceSymbolURL(s.ModuleName, s.Name, s.OID)
+	return templ.SafeURL("/m/" + url.PathEscape(s.ModuleName) + "/" + url.PathEscape(s.OID))
 }
 
 // SelectorLooksLikeOID reports whether the `sel=` query value is
 // an OID (digits + dots) rather than an SMI symbol name. SMI names
-// must start with a letter per RFC 1212 §4.1.6 / RFC 2578 §3.1, so
-// the first-char check is sufficient.
+// must start with a letter per RFC 1212 §4.1.6 / RFC 2578 §3.1.
+//
+// Beyond the first-char digit gate (which is enough to disambiguate
+// names from OIDs), every byte is verified to be a digit or dot.
+// `1abc` and `1<script>` would otherwise pass the first-char test
+// and reach `GetSymbolByOID` as garbage strings, where they'd land
+// in `view.MissingOID` and propagate further into the page.
 func SelectorLooksLikeOID(s string) bool {
-	if s == "" {
+	if s == "" || s[0] < '0' || s[0] > '9' {
 		return false
 	}
-	return s[0] >= '0' && s[0] <= '9'
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '.' {
+			continue
+		}
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // ImportGroup is one source-module entry in the module overview's
@@ -188,7 +212,7 @@ func GroupImports(imports []model.Import) []ImportGroup {
 // alongside `ifAdminStatus`, but the notification-objects pattern
 // often crosses module boundaries).
 func NotifyObjectURL(module, name string) templ.SafeURL {
-	return templ.SafeURL("/m/" + module + "?sel=" + name)
+	return templ.SafeURL("/m/" + url.PathEscape(module) + "?sel=" + url.QueryEscape(name))
 }
 
 // treeFragmentURL is the HTMX target that returns the children of
@@ -340,26 +364,29 @@ type pickerModule struct {
 // PickerModulesJSON returns a JSON-encoded slice of {name, oid}
 // objects for embedding in the module-picker overlay's hidden
 // `<script type="application/json">` payload. Errors are rare
-// (json.Marshal on a slice of plain strings) and would surface
-// only as an empty list — the picker's empty-state message
-// handles that case gracefully.
+// (the slice contains only plain strings) and would surface only
+// as an empty list — the picker's empty-state message handles
+// that case gracefully.
 //
-// The returned value is safe to embed inside `<script
-// type="application/json">…</script>` because JSON's strict
-// semantics guarantee no `</script>` substring can appear in
-// well-formed output (the only way it could is via a string
-// literal, and json.Marshal escapes `<` as `<` when the
-// encoder's HTMLEscape mode is on, which is the package default).
+// `json.NewEncoder` + `SetEscapeHTML(true)` is REQUIRED for the
+// embed-in-`<script>`-island to be safe. `json.Marshal` does NOT
+// HTML-escape by default (despite folklore — only `Encoder.Encode`
+// with `SetEscapeHTML(true)` enables it). A module name containing
+// `</script>` would otherwise terminate the inline JSON island
+// and execute injected markup. Encoder appends a trailing newline
+// that we strip before return.
 func PickerModulesJSON(mods []model.Module) string {
 	out := make([]pickerModule, 0, len(mods))
 	for _, m := range mods {
 		out = append(out, pickerModule{Name: m.Name, OID: m.OIDRoot})
 	}
-	b, err := json.Marshal(out)
-	if err != nil {
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(true)
+	if err := enc.Encode(out); err != nil {
 		return "[]"
 	}
-	return string(b)
+	return strings.TrimRight(buf.String(), "\n")
 }
 
 // lastSegment returns the final dotted segment of an OID, or the

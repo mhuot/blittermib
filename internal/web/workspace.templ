@@ -314,7 +314,7 @@ templ workspaceList(view *WorkspaceView, rows []model.Symbol, selectedOID string
 					data-kind={ string(s.Kind) }
 					data-href={ string(rowURL) }
 					x-show="matchesRow($el)"
-					x-on:click="if (!$event.target.closest('a, button')) { window.location = $el.dataset.href }">
+					x-on:click="if ($event.target.closest('a, button')) return; if ($event.metaKey || $event.ctrlKey) { window.open($el.dataset.href, '_blank'); return; } if ($event.shiftKey) { window.open($el.dataset.href); return; } window.location = $el.dataset.href;">
 					<td class="list-cell-badge">
 						<span class="tlet" aria-hidden="true">{ TypeLetter(&s) }</span>
 					</td>
@@ -457,12 +457,14 @@ templ workspaceDetailBody(view *WorkspaceView, sv *SymbolView) {
 		<div class="detail-actions">
 			if s.OID != "" {
 				<button type="button" class="btn primary"
-					x-on:click={ "navigator.clipboard.writeText('" + s.OID + "')" }>
+					data-clipboard-text={ s.OID }
+					x-on:click="if (navigator.clipboard) { navigator.clipboard.writeText($el.dataset.clipboardText); }">
 					Copy OID
 				</button>
 			}
 			<button type="button" class="btn"
-				x-on:click={ "navigator.clipboard.writeText('" + s.Name + "')" }>
+				data-clipboard-text={ s.Name }
+				x-on:click="if (navigator.clipboard) { navigator.clipboard.writeText($el.dataset.clipboardText); }">
 				Copy name
 			</button>
 			<a class="btn" href={ moduleURL(s.ModuleName) }>Close</a>
