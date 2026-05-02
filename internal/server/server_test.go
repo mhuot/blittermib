@@ -501,6 +501,216 @@ func TestModuleDownloadBundleMissingImports(t *testing.T) {
 	}
 }
 
+// TestModuleDownloadBundlePathTraversalRefused covers the spec
+// scenario "Path-traversal refused (bundle root)": a bundle request
+// for a module whose root SourcePath resolves outside the configured
+// roots returns 404 with no ZIP bytes — closure walking is skipped
+// entirely. Mirrors TestModuleDownloadPathTraversalRefused for the
+// single-MIB endpoint.
+func TestModuleDownloadBundlePathTraversalRefused(t *testing.T) {
+	dir := t.TempDir()
+	mibsDir := filepath.Join(dir, "mibs")
+	stdDir := filepath.Join(dir, "data", "standard-mibs")
+	if err := os.MkdirAll(mibsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideDir := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(outsideDir, "EVIL-MIB.txt")
+	if err := os.WriteFile(bad, []byte("SECRET\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.ReplaceModule(context.Background(),
+		&model.Module{
+			Name:        "EVIL-MIB",
+			SourcePath:  bad,
+			ParseStatus: model.ParseStatusClean,
+		}, nil, nil, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(st, "", "test", mibsDir, stdDir)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/m/EVIL-MIB/download.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for bundle path-traversal", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct == "application/zip" {
+		t.Errorf("response advertised application/zip on a refused bundle: %q", ct)
+	}
+	if got := body(t, resp); strings.Contains(got, "SECRET") {
+		t.Errorf("bundle body leaked the unsafe file: %q", got)
+	}
+}
+
+// TestModuleDownloadInvalidName ensures attacker-controlled URL
+// segments don't reach the store — names not matching
+// validModuleName 404 at handler entry.
+func TestModuleDownloadInvalidName(t *testing.T) {
+	ts, _ := downloadTestServer(t)
+	cases := []string{
+		"/m/1NUMERIC-START/download",
+		"/m/has%20space/download",
+		"/m/foo$bar/download",
+		"/m/1NUMERIC-START/download.zip",
+	}
+	for _, p := range cases {
+		t.Run(p, func(t *testing.T) {
+			resp, err := http.Get(ts.URL + p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("%s status = %d, want 404", p, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestModuleDownloadStaleSourceNoPathLeak verifies the 410 Gone
+// response body does NOT echo the recorded server-side filesystem
+// path — that would leak install layout / OS / container details.
+func TestModuleDownloadStaleSourceNoPathLeak(t *testing.T) {
+	dir := t.TempDir()
+	mibsDir := filepath.Join(dir, "mibs")
+	stdDir := filepath.Join(dir, "data", "standard-mibs")
+	if err := os.MkdirAll(mibsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Recorded path inside the allowed mibsDir but the file is
+	// missing — the path-traversal guard accepts (path is under
+	// roots) and os.Open then fails, exercising the 410 branch.
+	gonePath := filepath.Join(mibsDir, "GONE-MIB.txt")
+
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.ReplaceModule(context.Background(),
+		&model.Module{
+			Name:        "GONE-MIB",
+			SourcePath:  gonePath,
+			ParseStatus: model.ParseStatusClean,
+		}, nil, nil, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(st, "", "test", mibsDir, stdDir)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/m/GONE-MIB/download")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusGone {
+		t.Errorf("status = %d, want 410 for stale source", resp.StatusCode)
+	}
+	got := body(t, resp)
+	if strings.Contains(got, gonePath) || strings.Contains(got, mibsDir) {
+		t.Errorf("body leaked recorded path: %q", got)
+	}
+	if !strings.Contains(got, "no longer readable") {
+		t.Errorf("body missing explanation, got: %q", got)
+	}
+}
+
+// TestModuleDownloadBundleAlwaysEmitsMissing verifies MISSING.txt is
+// present in the ZIP even when every closure entry is shippable —
+// machine consumers can rely on its presence rather than inferring
+// from absence.
+func TestModuleDownloadBundleAlwaysEmitsMissing(t *testing.T) {
+	dir := t.TempDir()
+	mibsDir := filepath.Join(dir, "mibs")
+	stdDir := filepath.Join(dir, "data", "standard-mibs")
+	if err := os.MkdirAll(mibsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	soloPath := filepath.Join(mibsDir, "SOLO-MIB.txt")
+	if err := os.WriteFile(soloPath, []byte("SOLO-MIB DEFINITIONS ::= BEGIN\nEND\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.ReplaceModule(context.Background(),
+		&model.Module{
+			Name:        "SOLO-MIB",
+			SourcePath:  soloPath,
+			ParseStatus: model.ParseStatusClean,
+		}, nil, nil, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(st, "", "test", mibsDir, stdDir)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/m/SOLO-MIB/download.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	zipBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+	var missingBody string
+	for _, f := range zr.File {
+		if f.Name != "MISSING.txt" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf := new(strings.Builder)
+		if _, err := io.Copy(buf, rc); err != nil {
+			t.Fatal(err)
+		}
+		_ = rc.Close()
+		missingBody = buf.String()
+	}
+	if missingBody == "" {
+		t.Fatal("MISSING.txt not present in clean-closure bundle")
+	}
+	if !strings.Contains(missingBody, "no missing imports") {
+		t.Errorf("clean-closure MISSING.txt missing the no-missing header: %q", missingBody)
+	}
+}
+
 func TestModuleDownloadRouteDispatch(t *testing.T) {
 	ts, _ := downloadTestServer(t)
 	cases := []struct {

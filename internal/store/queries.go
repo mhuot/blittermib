@@ -70,10 +70,11 @@ func (s *Store) listImportsByModule(ctx context.Context, module string) ([]model
 // false case feeds the bundle download's MISSING.txt manifest so
 // the user can see exactly what wasn't included.
 //
-// `ImportedBy` carries the chain of modules that pulled this one
-// in (the immediate first-discovered importer; not the full chain
-// of ancestors). For closure entries discovered as the root, this
-// is empty.
+// `ImportedBy` is the immediate importer — the module that named
+// this entry in its IMPORTS clause and caused the BFS visit. For
+// closure entries discovered as the root, this is empty. The full
+// ancestor chain is intentionally NOT recorded; the spec asks for
+// the immediate importer only.
 //
 // `Symbols` carries the symbol names imported FROM this module by
 // the immediate importer (`ImportedBy`). For unloaded entries this
@@ -114,8 +115,7 @@ func (s *Store) ListImportClosure(ctx context.Context, root string) ([]ClosureEn
 
 	// Frontier holds names whose imports we still need to walk.
 	type frontierEntry struct {
-		name       string
-		importedBy string
+		name string
 	}
 	frontier := []frontierEntry{{name: rootMod.Name}}
 
@@ -133,6 +133,13 @@ func (s *Store) ListImportClosure(ctx context.Context, root string) ([]ClosureEn
 	}
 
 	for len(frontier) > 0 {
+		// Honor request-context cancellation between BFS rounds —
+		// closure walks on hub MIBs (SNMPv2-SMI etc.) can fan out
+		// across dozens of GetModule round-trips and shouldn't keep
+		// running after a disconnect.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		cur := frontier[0]
 		frontier = frontier[1:]
 
@@ -150,7 +157,20 @@ func (s *Store) ListImportClosure(ctx context.Context, root string) ([]ClosureEn
 				}
 				pendings[k] = p
 			}
-			p.symbols = append(p.symbols, imp.Symbol)
+			// Dedup symbols within the same (fromModule, importedBy)
+			// pair. SMI doesn't strictly forbid the same symbol
+			// appearing twice in an IMPORTS clause; without dedup
+			// MISSING.txt would echo the duplicate.
+			dup := false
+			for _, existing := range p.symbols {
+				if existing == imp.Symbol {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				p.symbols = append(p.symbols, imp.Symbol)
+			}
 		}
 
 		// Process pendings in source order — iterate `imports`
@@ -189,7 +209,7 @@ func (s *Store) ListImportClosure(ctx context.Context, root string) ([]ClosureEn
 					ImportedBy: cur.name,
 					Symbols:    p.symbols,
 				})
-				frontier = append(frontier, frontierEntry{name: depMod.Name, importedBy: cur.name})
+				frontier = append(frontier, frontierEntry{name: depMod.Name})
 			}
 		}
 	}

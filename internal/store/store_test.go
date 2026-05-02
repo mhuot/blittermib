@@ -441,6 +441,26 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+// sameStringsAnyOrder reports whether a and b are the same multiset
+// of strings — used by closure-walk tests where the iteration order
+// of imports inside a single module is not part of the contract.
+func sameStringsAnyOrder(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[string]int, len(a))
+	for _, s := range a {
+		counts[s]++
+	}
+	for _, s := range b {
+		counts[s]--
+		if counts[s] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func TestCountByFamily(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
@@ -615,9 +635,23 @@ func TestListImportClosure(t *testing.T) {
 		t.Fatalf("ListImportClosure: %v", err)
 	}
 
-	// BFS order: A, then A's imports (B), then B's imports (C, D).
+	// Closure has 4 entries: A (root), B (direct), and B's imports
+	// (C and D). Internal ordering depends on `listImportsByModule`'s
+	// SQL `ORDER BY` which is not part of the Store contract — match
+	// by module name into a map so the test stays stable across
+	// future query refinements.
 	if len(closure) != 4 {
 		t.Fatalf("closure size = %d, want 4: %+v", len(closure), closure)
+	}
+	byModule := make(map[string]ClosureEntry, len(closure))
+	for _, e := range closure {
+		byModule[e.Module] = e
+	}
+
+	// Root must be the first entry — that's a contract guarantee
+	// (handlers depend on it for the bundle root-traversal check).
+	if closure[0].Module != "A-MIB" {
+		t.Errorf("closure[0] = %q, want A-MIB (root must be first)", closure[0].Module)
 	}
 
 	want := []struct {
@@ -631,31 +665,29 @@ func TestListImportClosure(t *testing.T) {
 		{"C-MIB", true, "B-MIB", []string{"Counter32"}},
 		{"D-MIB", false, "B-MIB", []string{"TimeTicks", "Gauge32"}},
 	}
-	for i, w := range want {
-		got := closure[i]
-		if got.Module != w.Module {
-			t.Errorf("closure[%d].Module = %q, want %q", i, got.Module, w.Module)
+	for _, w := range want {
+		got, ok := byModule[w.Module]
+		if !ok {
+			t.Errorf("closure missing module %q", w.Module)
+			continue
 		}
 		if got.Loaded != w.Loaded {
-			t.Errorf("closure[%d].Loaded = %v, want %v", i, got.Loaded, w.Loaded)
+			t.Errorf("%s: Loaded = %v, want %v", w.Module, got.Loaded, w.Loaded)
 		}
 		if got.ImportedBy != w.ImportedBy {
-			t.Errorf("closure[%d].ImportedBy = %q, want %q", i, got.ImportedBy, w.ImportedBy)
+			t.Errorf("%s: ImportedBy = %q, want %q", w.Module, got.ImportedBy, w.ImportedBy)
 		}
-		if len(got.Symbols) != len(w.Symbols) {
-			t.Errorf("closure[%d].Symbols length = %d, want %d (%+v)", i, len(got.Symbols), len(w.Symbols), got.Symbols)
-		} else {
-			for j := range got.Symbols {
-				if got.Symbols[j] != w.Symbols[j] {
-					t.Errorf("closure[%d].Symbols[%d] = %q, want %q", i, j, got.Symbols[j], w.Symbols[j])
-				}
-			}
+		if !sameStringsAnyOrder(got.Symbols, w.Symbols) {
+			t.Errorf("%s: Symbols = %+v, want %+v (any order)", w.Module, got.Symbols, w.Symbols)
 		}
 	}
 
 	// Loaded entries should carry SourcePath; unloaded should not.
-	if closure[0].SourcePath != "/m/A-MIB" || closure[3].SourcePath != "" {
-		t.Errorf("SourcePath wiring wrong: %+v / %+v", closure[0], closure[3])
+	if a := byModule["A-MIB"]; a.SourcePath != "/m/A-MIB" {
+		t.Errorf("A-MIB SourcePath = %q, want /m/A-MIB", a.SourcePath)
+	}
+	if d := byModule["D-MIB"]; d.SourcePath != "" {
+		t.Errorf("D-MIB SourcePath = %q, want empty (unloaded)", d.SourcePath)
 	}
 }
 

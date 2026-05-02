@@ -731,6 +731,13 @@ type WorkspaceView struct {
 	// pane shows only symbols at or under this OID, and the
 	// list-pane chrome renders a "View all in module" link.
 	ScopeOID string
+	// ModuleDownloadable is true when the module's source file is
+	// readable on disk at render time. Drives whether the
+	// module-info bar surfaces the `↓ MIB` / `↓ bundle` download
+	// affordances — when false, clicking either link would 410 /
+	// produce an empty bundle, so we hide them rather than
+	// advertise a broken click target.
+	ModuleDownloadable bool
 }
 
 // moduleSummaryPreview returns the first-sentence preview of a
