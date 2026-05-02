@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -74,6 +75,66 @@ func TestCompiler_OK(t *testing.T) {
 		if r.Module.ParseStatus != model.ParseStatusClean {
 			t.Errorf("result %d: parse status = %q", i, r.Module.ParseStatus)
 		}
+	}
+}
+
+// TestCompiler_BackfillsSourcePathFromTarget pins the production
+// path's SourcePath population: smidump 0.5.0's XML output omits the
+// `path=` attribute on `<module>`, so `ToModel` produces an empty
+// SourcePath. The compile pipeline must back-fill from `target`
+// when `target` resolves to a real file on disk, otherwise the
+// download endpoints (`/m/{name}/download`, `download.zip`) and the
+// module-info bar's download affordances are dead code: every
+// module ships with empty SourcePath, the handler's `SourcePath != ""`
+// gate fires 404, and `ModuleDownloadable` stays false in the UI.
+func TestCompiler_BackfillsSourcePathFromTarget(t *testing.T) {
+	// Real file on disk — this is what the loader passes to
+	// compileOne via walkMIBFiles. fakeDumper still parses the
+	// canned IF-MIB XML fixture; we only care about SourcePath
+	// back-fill here.
+	dir := t.TempDir()
+	target := filepath.Join(dir, "IF-MIB.txt")
+	if err := os.WriteFile(target, []byte("placeholder"), 0o644); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+
+	d := &fakeDumper{xml: loadFixtureXML(t)}
+	c := &Compiler{Smidump: d}
+	results := c.Compile(context.Background(), []string{target})
+	if len(results) != 1 {
+		t.Fatalf("results = %d, want 1", len(results))
+	}
+	r := results[0]
+	if r.Err != nil {
+		t.Fatalf("compile: %v", r.Err)
+	}
+	if r.Module == nil {
+		t.Fatalf("module nil")
+	}
+	// Absolute form so the path-traversal guard's filepath.Rel
+	// computation works regardless of how the loader phrased it.
+	if !strings.HasSuffix(r.Module.SourcePath, "IF-MIB.txt") {
+		t.Errorf("SourcePath = %q, want suffix %q", r.Module.SourcePath, "IF-MIB.txt")
+	}
+	if !filepath.IsAbs(r.Module.SourcePath) {
+		t.Errorf("SourcePath = %q, want absolute path", r.Module.SourcePath)
+	}
+}
+
+// TestCompiler_LeavesSourcePathEmptyForNameTargets verifies the
+// back-fill is gated on `os.Stat` success — bare module names that
+// don't resolve to a file (the form used by other unit tests in
+// this package) leave SourcePath empty rather than synthesising a
+// bogus path.
+func TestCompiler_LeavesSourcePathEmptyForNameTargets(t *testing.T) {
+	d := &fakeDumper{xml: loadFixtureXML(t)}
+	c := &Compiler{Smidump: d}
+	results := c.Compile(context.Background(), []string{"IF-MIB"})
+	if len(results) != 1 {
+		t.Fatalf("results = %d", len(results))
+	}
+	if got := results[0].Module.SourcePath; got != "" {
+		t.Errorf("SourcePath = %q, want empty for non-file target", got)
 	}
 }
 

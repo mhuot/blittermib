@@ -3,6 +3,8 @@ package compile
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -99,6 +101,21 @@ func (c *Compiler) compileOne(ctx context.Context, target string) Result {
 
 	mod, syms := ToModel(smi)
 	mod.ParseStatus = parseStatusFor(r.Diagnostics)
+
+	// smidump 0.5.0 does not emit a `path=` attribute on the
+	// `<module>` element of its XML output, so `ToModel` produces an
+	// empty SourcePath. The compile target is the file path we just
+	// fed smidump (the loader passes file paths from `walkMIBFiles`),
+	// so back-fill SourcePath here when target resolves to a real
+	// file. Targets that are bare module names (used in tests) leave
+	// SourcePath empty — `os.Stat` distinguishes the cases.
+	if mod.SourcePath == "" {
+		if abs, err := filepath.Abs(target); err == nil {
+			if info, err := os.Stat(abs); err == nil && !info.IsDir() {
+				mod.SourcePath = abs
+			}
+		}
+	}
 
 	r.Module = mod
 	r.Symbols = syms

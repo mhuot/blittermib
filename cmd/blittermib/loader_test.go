@@ -1,10 +1,20 @@
 package main
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/no42-org/blittermib/internal/compile"
 	"github.com/no42-org/blittermib/internal/model"
+	"github.com/no42-org/blittermib/internal/server"
+	"github.com/no42-org/blittermib/internal/store"
 )
 
 func TestRejectReason(t *testing.T) {
@@ -84,5 +94,113 @@ func TestRejectReason(t *testing.T) {
 				t.Error("rejected but no reason given")
 			}
 		})
+	}
+}
+
+// minimalMIB is a hand-crafted SMIv2 module that smidump 0.5.0
+// accepts cleanly. Just enough machinery (MODULE-IDENTITY pointing
+// at a private OID, one OBJECT-IDENTITY child) to land a row in
+// `module` plus a row in `symbol`.
+const minimalMIB = `BLITTERMIB-E2E-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-IDENTITY, OBJECT-IDENTITY, enterprises
+        FROM SNMPv2-SMI;
+
+testRoot MODULE-IDENTITY
+    LAST-UPDATED "202605030000Z"
+    ORGANIZATION "blittermib e2e"
+    CONTACT-INFO "test@example.invalid"
+    DESCRIPTION  "Probe MIB for the compile->store->download e2e test."
+    ::= { enterprises 99999 }
+
+testProbe OBJECT-IDENTITY
+    STATUS  current
+    DESCRIPTION "Probe object."
+    ::= { testRoot 1 }
+
+END
+`
+
+// TestE2E_CompileStoreDownload exercises the full production path:
+// real smidump compiles a real MIB file, the result lands in the
+// store, and an HTTP request to /m/{name}/download serves the
+// recorded source bytes back. Catches the SourcePath plumbing
+// regression where smidump 0.5.0's XML omits `path=`, ToModel
+// produces empty SourcePath, and every download endpoint 404s.
+//
+// Skips when smidump isn't on PATH. The unit-level coverage in
+// internal/compile/compiler_test.go (TestCompiler_BackfillsSource…)
+// guards the back-fill logic without that dependency.
+func TestE2E_CompileStoreDownload(t *testing.T) {
+	if _, err := exec.LookPath("smidump"); err != nil {
+		t.Skip("smidump not on PATH — skipping e2e download probe")
+	}
+
+	dir := t.TempDir()
+	mibsDir := filepath.Join(dir, "mibs")
+	stdDir := filepath.Join(dir, "data", "standard-mibs")
+	if err := os.MkdirAll(mibsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	mibPath := filepath.Join(mibsDir, "BLITTERMIB-E2E-MIB.mib")
+	if err := os.WriteFile(mibPath, []byte(minimalMIB), 0o644); err != nil {
+		t.Fatalf("write MIB: %v", err)
+	}
+
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	importPaths := []string{mibsDir, stdDir}
+	ldr := &loader{
+		compiler: &compile.Compiler{
+			Smidump: &compile.Smidump{Path: "smidump", Paths: importPaths},
+			Smilint: &compile.Smilint{Path: "smilint", Paths: importPaths},
+		},
+		store: st,
+	}
+	if err := ldr.loadFiles(context.Background(), []string{mibPath}); err != nil {
+		t.Fatalf("loadFiles: %v", err)
+	}
+
+	mod, err := st.GetModule(context.Background(), "BLITTERMIB-E2E-MIB")
+	if err != nil {
+		t.Fatalf("GetModule: %v", err)
+	}
+	if mod.SourcePath == "" {
+		t.Fatal("SourcePath empty after compile + store — back-fill regressed")
+	}
+	if !filepath.IsAbs(mod.SourcePath) {
+		t.Errorf("SourcePath = %q, want absolute path", mod.SourcePath)
+	}
+
+	srv := server.New(st, "", "test", mibsDir, stdDir)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/m/BLITTERMIB-E2E-MIB/download")
+	if err != nil {
+		t.Fatalf("GET /download: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, `filename="BLITTERMIB-E2E-MIB.mib"`) {
+		t.Errorf("Content-Disposition = %q, want filename BLITTERMIB-E2E-MIB.mib", cd)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "BLITTERMIB-E2E-MIB DEFINITIONS") {
+		t.Errorf("body missing source content (first 200 bytes): %q", string(body[:min(200, len(body))]))
 	}
 }
