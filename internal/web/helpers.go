@@ -110,9 +110,15 @@ func KindHasChildren(k model.SymbolKind) bool {
 //     `/m/{name}/{currentScope}?sel={oid}`. The right pane updates
 //     while the list and breadcrumb stay put — matching the handoff
 //     workflow where clicking a column just swaps the detail pane.
-//   - When the workspace has no current scope (root view), even
-//     leaves are routed as scope changes, since "preserve nothing"
-//     reduces to "set scope to clicked".
+//   - When the workspace has no current scope, leaves with a known
+//     parent OID scope to the parent — the list pane then shows the
+//     leaf's siblings with the leaf highlighted. Clicking `linkDown`
+//     in the tree from the unscoped module view lands on
+//     `/m/{module}/{snmpTraps-OID}?sel={linkDown-OID}`, which is the
+//     "browse onward" workflow the user expects (here are the trap
+//     OIDs, you clicked this one). Leaves with no parent OID (rare:
+//     a top-level OID-bearing symbol) fall back to the module-root
+//     view with the symbol selected.
 //   - Symbols with no OID (textual conventions, some object groups)
 //     can't slot into the OID-keyed scope path, so they ride in as
 //     `?sel={name}`. The handler distinguishes OID vs. name
@@ -128,14 +134,13 @@ func WorkspaceRowURL(view *WorkspaceView, s *model.Symbol) templ.SafeURL {
 	if s == nil {
 		return moduleURL(module)
 	}
-	// Leaves (and no-OID symbols) NEVER scope-change. They preserve
-	// the current scope and ride in via `?sel=…`; if no scope is
-	// set, they navigate to the module root with the symbol selected.
-	// Setting scope to a leaf would narrow the list to either
-	// just-itself (an OID match) or an empty set, breaking the
-	// "browse onward" workflow — clicking a column / notification /
-	// textual convention should never strand the user on an empty
-	// list pane.
+	// Leaves (and no-OID symbols) NEVER scope-change to themselves.
+	// They preserve the current scope and ride in via `?sel=…`. When
+	// there's no current scope, leaves with a parent OID scope to
+	// the parent so the list pane shows the leaf's siblings rather
+	// than every symbol in the module — setting scope to the leaf
+	// itself would narrow the list to either just-itself (an OID
+	// match) or an empty set, breaking the "browse onward" workflow.
 	//
 	// All path / query components go through `url.PathEscape` /
 	// `url.QueryEscape`. SMI module names and OIDs are URL-safe in
@@ -152,6 +157,9 @@ func WorkspaceRowURL(view *WorkspaceView, s *model.Symbol) templ.SafeURL {
 	if !KindHasChildren(s.Kind) {
 		if scope != "" {
 			return templ.SafeURL("/m/" + url.PathEscape(module) + "/" + url.PathEscape(scope) + "?sel=" + url.QueryEscape(s.OID))
+		}
+		if s.ParentOID != "" {
+			return templ.SafeURL("/m/" + url.PathEscape(module) + "/" + url.PathEscape(s.ParentOID) + "?sel=" + url.QueryEscape(s.OID))
 		}
 		return templ.SafeURL("/m/" + url.PathEscape(module) + "?sel=" + url.QueryEscape(s.OID))
 	}

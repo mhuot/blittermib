@@ -126,3 +126,98 @@ func TestTrapTypeLetterCommonTCs(t *testing.T) {
 		})
 	}
 }
+
+// TestWorkspaceRowURL pins the leaf-vs-container click semantics —
+// in particular the parent-scope fallback that runs when a leaf is
+// clicked from the unscoped module view. Clicking `linkDown`
+// (a notification) from `/m/SNMPv2-MIB` should land on
+// `/m/SNMPv2-MIB/{snmpTraps-OID}?sel={linkDown-OID}` so the list
+// pane shows the leaf's siblings instead of every symbol in the
+// module.
+func TestWorkspaceRowURL(t *testing.T) {
+	const (
+		moduleName   = "SNMPv2-MIB"
+		snmpTraps    = "1.3.6.1.6.3.1.1.5"
+		linkDownOID  = "1.3.6.1.6.3.1.1.5.3"
+		ifEntryOID   = "1.3.6.1.2.1.2.2.1"
+		ifIndexOID   = "1.3.6.1.2.1.2.2.1.1"
+		topLevelLeaf = "1.3.6.1.4.1.99999"
+	)
+	moduleView := &WorkspaceView{Module: &model.Module{Name: moduleName}}
+	scopedView := &WorkspaceView{
+		Module:   &model.Module{Name: moduleName},
+		ScopeOID: snmpTraps,
+	}
+
+	cases := []struct {
+		name string
+		view *WorkspaceView
+		sym  *model.Symbol
+		want string
+	}{
+		{
+			"nil symbol falls back to module page",
+			moduleView,
+			nil,
+			"/m/" + moduleName,
+		},
+		{
+			"leaf with no scope and a parent OID scopes to the parent",
+			moduleView,
+			&model.Symbol{
+				ModuleName: moduleName, Name: "linkDown",
+				OID: linkDownOID, ParentOID: snmpTraps,
+				Kind: model.KindNotificationType,
+			},
+			"/m/" + moduleName + "/" + snmpTraps + "?sel=" + linkDownOID,
+		},
+		{
+			"leaf with current scope preserves that scope",
+			scopedView,
+			&model.Symbol{
+				ModuleName: moduleName, Name: "ifIndex",
+				OID: ifIndexOID, ParentOID: ifEntryOID,
+				Kind: model.KindColumn,
+			},
+			"/m/" + moduleName + "/" + snmpTraps + "?sel=" + ifIndexOID,
+		},
+		{
+			"leaf with no scope and no parent OID falls back to module root",
+			moduleView,
+			&model.Symbol{
+				ModuleName: moduleName, Name: "orphanLeaf",
+				OID: topLevelLeaf, ParentOID: "",
+				Kind: model.KindNotificationType,
+			},
+			"/m/" + moduleName + "?sel=" + topLevelLeaf,
+		},
+		{
+			"container drills in (scope change)",
+			moduleView,
+			&model.Symbol{
+				ModuleName: moduleName, Name: "ifEntry",
+				OID: ifEntryOID, ParentOID: "1.3.6.1.2.1.2.2",
+				Kind: model.KindTableEntry,
+			},
+			"/m/" + moduleName + "/" + ifEntryOID,
+		},
+		{
+			"no-OID symbol with no scope rides in by name to module root",
+			moduleView,
+			&model.Symbol{
+				ModuleName: moduleName, Name: "TruthValue",
+				Kind: model.KindTextualConvention,
+			},
+			"/m/" + moduleName + "?sel=TruthValue",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := string(WorkspaceRowURL(c.view, c.sym))
+			if got != c.want {
+				t.Errorf("WorkspaceRowURL = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
