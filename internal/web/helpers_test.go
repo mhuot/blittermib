@@ -224,6 +224,15 @@ func TestWorkspaceRowURL(t *testing.T) {
 			},
 			"/m/" + moduleName + "?sel=TruthValue",
 		},
+		{
+			"no-OID symbol with current scope still rides to module root (scope cleared)",
+			ifEntryScopedView,
+			&model.Symbol{
+				ModuleName: moduleName, Name: "InterfaceIndex",
+				Kind: model.KindTextualConvention,
+			},
+			"/m/" + moduleName + "?sel=InterfaceIndex",
+		},
 	}
 
 	for _, c := range cases {

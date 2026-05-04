@@ -124,14 +124,19 @@ func KindHasChildren(k model.SymbolKind) bool {
 //     symbol) fall back to the module-root view with the symbol
 //     selected.
 //   - Symbols with no OID (textual conventions, some object groups)
-//     can't slot into the OID-keyed scope path, so they ride in as
-//     `?sel={name}`. The handler distinguishes OID vs. name
-//     selectors by whether the value starts with a digit — SMI
-//     names must start with a letter per RFC 1212 §4.1.6 / RFC
-//     2578 §3.1, so the first-char check is unambiguous. This keeps
-//     TC clicks inside the workspace shell instead of bouncing the
-//     user to the canonical `/s/{module}::{name}` page (which loses
-//     the workspace chrome and the navigation context).
+//     are module-level definitions and don't slot into an OID-
+//     keyed scope path. They ALWAYS navigate to `/m/{module}?sel={name}`
+//     — the current scope is cleared so the list pane shows the
+//     full module symbol set with the no-OID symbol highlighted,
+//     rather than stranding the user on an unrelated scoped list
+//     where the symbol can't appear. The handler distinguishes
+//     OID vs. name selectors by whether the value starts with a
+//     digit — SMI names must start with a letter per RFC 1212
+//     §4.1.6 / RFC 2578 §3.1, so the first-char check is
+//     unambiguous. This keeps TC clicks inside the workspace
+//     shell instead of bouncing the user to the canonical
+//     `/s/{module}::{name}` page (which loses the workspace
+//     chrome and the navigation context).
 func WorkspaceRowURL(view *WorkspaceView, s *model.Symbol) templ.SafeURL {
 	module := viewModuleName(view)
 	scope := viewScopeOID(view)
@@ -145,9 +150,14 @@ func WorkspaceRowURL(view *WorkspaceView, s *model.Symbol) templ.SafeURL {
 	// rare malformed MIB with a stray space, ampersand, or quote in
 	// a name) would otherwise inject markup. Defense in depth.
 	if s.OID == "" {
-		if scope != "" {
-			return templ.SafeURL("/m/" + url.PathEscape(module) + "/" + url.PathEscape(scope) + "?sel=" + url.QueryEscape(s.Name))
-		}
+		// No-OID symbols (Textual Conventions, some object groups)
+		// are module-level definitions — they don't live under any
+		// OID subtree, so preserving the current scope is
+		// meaningless. Always navigate to the module root with
+		// `?sel={name}` so the workspace's list pane shows the full
+		// module symbol set with the TC highlighted, instead of
+		// stranding the user on an unrelated scoped list with the
+		// detail pane the only thing reflecting the click.
 		return templ.SafeURL("/m/" + url.PathEscape(module) + "?sel=" + url.QueryEscape(s.Name))
 	}
 	if !KindHasChildren(s.Kind) {
