@@ -1384,11 +1384,13 @@ button { font-family: inherit; }
 
 /* --- footer --------------------------------------------------------- */
 
+/* Spans the full page width with the same `--gutter` left/right padding
+ * as the topbar, so the credit text sits flush with the brand wordmark
+ * (left) and the theme toggle (right). No border or wrapping container —
+ * the footer reads as part of the page chrome rather than a card-bound
+ * sibling of the workspace. */
 .footer {
-  max-width: 1200px;
-  margin: 64px auto 40px;
-  padding: 1rem var(--gutter) 0;
-  border-top: 1px solid var(--line);
+  padding: 24px var(--gutter) 16px;
   font-size: 0.8125rem;
   color: var(--fg-3);
   display: flex;
