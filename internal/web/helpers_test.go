@@ -144,9 +144,13 @@ func TestWorkspaceRowURL(t *testing.T) {
 		topLevelLeaf = "1.3.6.1.4.1.99999"
 	)
 	moduleView := &WorkspaceView{Module: &model.Module{Name: moduleName}}
-	scopedView := &WorkspaceView{
+	ifEntryScopedView := &WorkspaceView{
 		Module:   &model.Module{Name: moduleName},
-		ScopeOID: snmpTraps,
+		ScopeOID: ifEntryOID,
+	}
+	interfacesScopedView := &WorkspaceView{
+		Module:   &model.Module{Name: moduleName},
+		ScopeOID: "1.3.6.1.2.1.2",
 	}
 
 	cases := []struct {
@@ -172,14 +176,24 @@ func TestWorkspaceRowURL(t *testing.T) {
 			"/m/" + moduleName + "/" + snmpTraps + "?sel=" + linkDownOID,
 		},
 		{
-			"leaf with current scope preserves that scope",
-			scopedView,
+			"leaf inside current scope preserves that scope",
+			ifEntryScopedView,
 			&model.Symbol{
 				ModuleName: moduleName, Name: "ifIndex",
 				OID: ifIndexOID, ParentOID: ifEntryOID,
 				Kind: model.KindColumn,
 			},
-			"/m/" + moduleName + "/" + snmpTraps + "?sel=" + ifIndexOID,
+			"/m/" + moduleName + "/" + ifEntryOID + "?sel=" + ifIndexOID,
+		},
+		{
+			"leaf outside current scope switches to the leaf's parent",
+			interfacesScopedView,
+			&model.Symbol{
+				ModuleName: moduleName, Name: "linkDown",
+				OID: linkDownOID, ParentOID: snmpTraps,
+				Kind: model.KindNotificationType,
+			},
+			"/m/" + moduleName + "/" + snmpTraps + "?sel=" + linkDownOID,
 		},
 		{
 			"leaf with no scope and no parent OID falls back to module root",
