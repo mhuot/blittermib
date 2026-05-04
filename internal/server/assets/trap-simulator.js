@@ -23,6 +23,45 @@ window.trapSimulator = (function () {
 	// varbind during the SMIv2-to-SMIv1 translation per RFC 2576.
 	var SNMP_TRAP_OID = '.1.3.6.1.6.3.1.1.4.1.0';
 
+	// readIndexColumns parses the notify-objects list's
+	// `data-trap-index-columns` attribute (a JSON array of
+	// {name, syntax} entries emitted by the Go template) and
+	// initialises a per-column `value` field with a sensible
+	// default — empty string for IpAddress (so the placeholder
+	// shows), zero for INTEGER (so the generated command is
+	// valid before the user types anything). Returns [] when
+	// the attribute is missing or malformed; the modal then
+	// falls back to its scalar-only / raw-suffix UI based on
+	// indexMode.
+	function readIndexColumns(ul) {
+		var raw = ul.dataset.trapIndexColumns;
+		if (!raw) return [];
+		var parsed;
+		try {
+			parsed = JSON.parse(raw);
+		} catch (_) {
+			return [];
+		}
+		if (!Array.isArray(parsed)) return [];
+		var out = [];
+		for (var i = 0; i < parsed.length; i++) {
+			var col = parsed[i];
+			if (!col || typeof col !== 'object') continue;
+			var defaultValue;
+			if (col.syntax === 'IpAddress') {
+				defaultValue = '';
+			} else {
+				defaultValue = 0;
+			}
+			out.push({
+				name: String(col.name || ''),
+				syntax: String(col.syntax || ''),
+				value: defaultValue,
+			});
+		}
+		return out;
+	}
+
 	function readVarbinds(ul) {
 		var rows = ul.querySelectorAll('.notify-object-row');
 		var out = [];
@@ -77,7 +116,12 @@ window.trapSimulator = (function () {
 			// metadata reads. open() always sets the real value
 			// from the rendered DOM.
 			indexMode: 'scalar-only',
-			indexLabel: '',
+			// Per-index-column descriptors: { name, syntax, value }.
+			// Populated by open() from the notify-objects list's
+			// data-trap-index-columns JSON; the modal walks this
+			// to render one type-specific input per column when
+			// indexMode === 'indexed'.
+			indexColumns: [],
 			varbinds: [],
 
 			// Target group
@@ -100,8 +144,8 @@ window.trapSimulator = (function () {
 			v3PrivPass: '',
 			v3EngineID: '',
 
-			// Row identity
-			rowIndex: 1,
+			// Row identity (raw-suffix mode only — indexed mode
+			// stores per-column values inside indexColumns[].value).
 			rawSuffix: '',
 
 			// UI state
@@ -126,7 +170,7 @@ window.trapSimulator = (function () {
 					module: ul.dataset.notificationModule || '',
 				};
 				this.indexMode = ul.dataset.trapIndexMode || 'raw-suffix';
-				this.indexLabel = ul.dataset.trapIndexLabel || '';
+				this.indexColumns = readIndexColumns(ul);
 				this.varbinds = readVarbinds(ul);
 				this.copied = false;
 				this.engineIDError = '';
@@ -149,7 +193,6 @@ window.trapSimulator = (function () {
 				this.v3User = '';
 				this.v3EngineID = '';
 				this.agentAddr = '0.0.0.0';
-				this.rowIndex = 1;
 				this.rawSuffix = '';
 				this.specificTrap = 0;
 				this.uptime = 0;
@@ -175,7 +218,7 @@ window.trapSimulator = (function () {
 				// Reset indexMode so a previous notification's
 				// raw-suffix mode doesn't bleed into the next open.
 				this.indexMode = 'scalar-only';
-				this.indexLabel = '';
+				this.indexColumns = [];
 			},
 
 			validateEngineID: function () {
@@ -196,14 +239,12 @@ window.trapSimulator = (function () {
 
 			suffix: function (vb) {
 				if (vb.isColumn) {
-					if (this.indexMode === 'single-int') {
-						// x-model.number on an empty input yields
-						// NaN; fall back to 1 so the generated
-						// command stays valid until the user fixes
-						// the input.
-						var n = Number(this.rowIndex);
-						if (!isFinite(n)) n = 1;
-						return '.' + n;
+					if (this.indexMode === 'indexed') {
+						var parts = '';
+						for (var i = 0; i < this.indexColumns.length; i++) {
+							parts += this.composeColumn(this.indexColumns[i]);
+						}
+						return parts;
 					}
 					if (this.indexMode === 'raw-suffix') {
 						// rawSuffix may or may not include a leading dot
@@ -214,6 +255,50 @@ window.trapSimulator = (function () {
 				}
 				// Scalars (or columns in scalar-only mode) use .0
 				return '.0';
+			},
+
+			// composeColumn dispatches per-column suffix composition
+			// by `col.syntax`. Tier 1 covers INTEGER (and Integer32-
+			// like base types) and IpAddress. Unknown syntaxes are
+			// composed as a numeric integer — a safe fallback for
+			// integer-shaped TCs that the server-side classifier
+			// resolved as `indexed` even though the JS doesn't
+			// recognise the literal syntax string.
+			composeColumn: function (col) {
+				if (col.syntax === 'IpAddress') {
+					return this.composeIpAddress(col.value);
+				}
+				return this.composeInteger(col.value);
+			},
+
+			// composeInteger emits ".n" for an INTEGER index column.
+			// Empty / non-numeric input yields ".1" so the generated
+			// command stays runnable while the user is mid-typing —
+			// matches the v1.0 single-int behavior.
+			composeInteger: function (value) {
+				var n = Number(value);
+				if (!isFinite(n)) n = 1;
+				return '.' + n;
+			},
+
+			// composeIpAddress validates a dotted-quad string and
+			// emits ".a.b.c.d". Returns ".<ERROR>" on malformed
+			// input — the four octets must each be a non-empty
+			// decimal in [0..255], with exactly three dots.
+			composeIpAddress: function (value) {
+				var s = String(value == null ? '' : value).trim();
+				if (s === '') return '.<ERROR>';
+				var parts = s.split('.');
+				if (parts.length !== 4) return '.<ERROR>';
+				var out = '';
+				for (var i = 0; i < 4; i++) {
+					var octet = parts[i];
+					if (octet === '' || /[^0-9]/.test(octet)) return '.<ERROR>';
+					var n = Number(octet);
+					if (!isFinite(n) || n < 0 || n > 255) return '.<ERROR>';
+					out += '.' + n;
+				}
+				return out;
 			},
 
 			formatValue: function (vb) {

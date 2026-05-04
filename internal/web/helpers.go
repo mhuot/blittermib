@@ -785,27 +785,47 @@ type TrapIndexColumn struct {
 // prompt the user for the row identity that's appended to each
 // column varbind's OID.
 //
-// `Mode = "single-int"` means every column varbind shares a parent
-// table-entry whose INDEX clause is exactly one INTEGER column —
-// the modal renders one labeled input (e.g. "ifIndex") that's
-// appended as `.{value}` to each column OID.
+// `Mode = "indexed"` means every column varbind shares a parent
+// table-entry whose INDEX clause has classifiable column syntaxes
+// (e.g. a single INTEGER, a single IpAddress). The modal walks
+// `Columns` to render one type-specific input per column and
+// composes each suffix from the per-column composers.
 //
 // `Mode = "scalar-only"` means every varbind is a scalar — `.0` is
 // appended silently, no row-identity input is shown.
 //
-// `Mode = "raw-suffix"` is the v1.0 fallback for everything else
-// (composite indexes, IpAddress, OCTET STRING, multi-parent
-// notifications). The modal renders a freeform text input where
-// the user types the dotted suffix themselves.
-//
-// `Columns` carries a per-index-column descriptor in INDEX-clause
-// order — populated alongside the legacy Mode/IndexLabel fields
-// for the modes the modal renders per-column. Unused entries are
-// `nil` for "scalar-only" and "raw-suffix".
+// `Mode = "raw-suffix"` is the v1.0 fallback for everything the
+// classifier doesn't yet recognise (multi-column composite
+// indexes, OCTET STRING, OID, BITS, multi-parent notifications).
+// The modal renders a freeform text input where the user types
+// the dotted suffix themselves.
 type TrapIndexStrategy struct {
-	Mode       string // "single-int" | "scalar-only" | "raw-suffix"
-	IndexLabel string // e.g. "ifIndex" — populated when Mode = "single-int"
-	Columns    []TrapIndexColumn
+	Mode    string // "indexed" | "scalar-only" | "raw-suffix"
+	Columns []TrapIndexColumn
+}
+
+// TrapIndexColumnsJSON returns a JSON-encoded slice of {name,
+// syntax} objects for embedding in the notify-objects list's
+// `data-trap-index-columns` attribute. The trap-simulator modal
+// parses this on open() and walks the entries to render per-column
+// row-identity inputs.
+//
+// `json.NewEncoder` + `SetEscapeHTML(true)` is REQUIRED for the
+// embed-in-attribute to be safe — `json.Marshal` does not escape
+// HTML. A column name containing `</script>` or a quote could
+// otherwise terminate the attribute and inject markup. Encoder
+// appends a trailing newline that we strip before return.
+func TrapIndexColumnsJSON(cols []TrapIndexColumn) string {
+	if len(cols) == 0 {
+		return "[]"
+	}
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(true)
+	if err := enc.Encode(cols); err != nil {
+		return "[]"
+	}
+	return strings.TrimRight(buf.String(), "\n")
 }
 
 // SymbolContext captures "where in the SMI tree does this symbol sit"

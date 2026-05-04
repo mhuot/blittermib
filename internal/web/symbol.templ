@@ -18,12 +18,14 @@ import "github.com/no42-org/blittermib/internal/model"
 //
 // `TrapIndex` describes how the trap-simulator modal should prompt
 // for the row identity when composing the OIDs for those varbinds:
-// `single-int` for the common case (all column varbinds share an
-// entry whose INDEX is one INTEGER column), `scalar-only` for
-// notifications whose objects are all scalars, and `raw-suffix`
-// for everything else (composite indexes, IpAddress, OCTET STRING,
-// multi-parent notifications) — those degrade to a free-form text
-// input where the user types the dotted suffix themselves.
+// `indexed` walks the per-column descriptors to render type-
+// specific inputs (numeric for INTEGER, dotted-quad for IpAddress,
+// etc.); `scalar-only` for notifications whose objects are all
+// scalars; and `raw-suffix` is the v1.0 fallback for what the
+// classifier doesn't yet handle (multi-column composites, OCTET
+// STRING / OID / BITS indexes, multi-parent notifications) —
+// those degrade to a free-form text input where the user types
+// the dotted suffix themselves.
 type SymbolView struct {
 	Symbol        *model.Symbol
 	Context       *SymbolContext

@@ -1948,8 +1948,12 @@ func TestNotificationPageContainsDataAttributes(t *testing.T) {
 		`data-notification-oid="1.3.6.1.6.3.1.1.5.3"`,
 		`data-notification-name="linkDown"`,
 		`data-notification-module="IF-MIB"`,
-		`data-trap-index-mode="single-int"`,
-		`data-trap-index-label="ifIndex"`,
+		`data-trap-index-mode="indexed"`,
+		// data-trap-index-columns is a JSON array; templ's attribute
+		// escaping turns `"` into `&#34;`. The substring assertion
+		// pins both the column name and its classified syntax.
+		`&#34;name&#34;:&#34;ifIndex&#34;`,
+		`&#34;syntax&#34;:&#34;INTEGER&#34;`,
 	}
 	for _, w := range wantUL {
 		if !strings.Contains(body, w) {
@@ -1997,10 +2001,9 @@ func bodyString(t *testing.T, resp *http.Response) string {
 // TestBuildNotifyVarbindsSingleIntegerIndex covers the
 // classifier's single-INTEGER-index path: linkDown's OBJECTS sit
 // under ifEntry whose INDEX is `{ifIndex}` (an INTEGER column),
-// so `buildNotifyVarbinds` should return Mode "single-int" with
-// IndexLabel "ifIndex" and a single INTEGER column descriptor.
-// The Columns slice is the substrate the trap-simulator modal
-// will walk in subsequent tiers to render per-column UI.
+// so `buildNotifyVarbinds` should return Mode "indexed" with a
+// single INTEGER column descriptor. The trap-simulator modal
+// walks Columns to render the row-identity input(s).
 func TestBuildNotifyVarbindsSingleIntegerIndex(t *testing.T) {
 	st, err := store.OpenInMemory(context.Background())
 	if err != nil {
@@ -2056,11 +2059,8 @@ func TestBuildNotifyVarbindsSingleIntegerIndex(t *testing.T) {
 	}
 	_, idx := srv.buildNotifyVarbinds(ctx, refs)
 
-	if idx.Mode != "single-int" {
-		t.Errorf("Mode = %q, want %q", idx.Mode, "single-int")
-	}
-	if idx.IndexLabel != "ifIndex" {
-		t.Errorf("IndexLabel = %q, want %q", idx.IndexLabel, "ifIndex")
+	if idx.Mode != "indexed" {
+		t.Errorf("Mode = %q, want %q", idx.Mode, "indexed")
 	}
 	if len(idx.Columns) != 1 {
 		t.Fatalf("Columns len = %d, want 1; Columns = %#v", len(idx.Columns), idx.Columns)
@@ -2070,6 +2070,81 @@ func TestBuildNotifyVarbindsSingleIntegerIndex(t *testing.T) {
 	}
 	if idx.Columns[0].Syntax != "INTEGER" {
 		t.Errorf("Columns[0].Syntax = %q, want %q", idx.Columns[0].Syntax, "INTEGER")
+	}
+}
+
+// TestBuildNotifyVarbindsIpAddressIndex covers the Tier 1
+// IpAddress path: a notification whose OBJECTS share a parent
+// entry indexed by a single `IpAddress` column should classify
+// to Mode "indexed" with one IpAddress column descriptor — the
+// modal renders a dotted-quad text input and composes the
+// `.a.b.c.d` suffix per the spec scenario.
+func TestBuildNotifyVarbindsIpAddressIndex(t *testing.T) {
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatalf("OpenInMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx := context.Background()
+	if err := st.ReplaceModule(ctx,
+		&model.Module{Name: "IP-MIB", OIDRoot: "1.3.6.1.2.1.4", ParseStatus: model.ParseStatusClean},
+		[]model.Symbol{
+			{
+				ModuleName: "IP-MIB", Name: "ipAddrEntry",
+				OID: "1.3.6.1.2.1.4.20.1", ParentOID: "1.3.6.1.2.1.4.20",
+				Kind: model.KindTableEntry, Syntax: "IpAddrEntry",
+				IndexColumns: []string{"ipAdEntAddr"},
+			},
+			{
+				ModuleName: "IP-MIB", Name: "ipAdEntAddr",
+				OID: "1.3.6.1.2.1.4.20.1.1", ParentOID: "1.3.6.1.2.1.4.20.1",
+				Kind: model.KindColumn, Syntax: "IpAddress",
+			},
+			{
+				ModuleName: "IP-MIB", Name: "ipAdEntIfIndex",
+				OID: "1.3.6.1.2.1.4.20.1.2", ParentOID: "1.3.6.1.2.1.4.20.1",
+				Kind: model.KindColumn, Syntax: "INTEGER",
+			},
+			{
+				ModuleName: "IP-MIB", Name: "ipAddrChange",
+				OID: "1.3.6.1.4.1.99999.1", ParentOID: "1.3.6.1.4.1.99999",
+				Kind: model.KindNotificationType, Status: model.StatusCurrent,
+			},
+		},
+		[]model.Reference{
+			{
+				SourceModule: "IP-MIB", SourceName: "ipAddrChange",
+				TargetModule: "IP-MIB", TargetName: "ipAdEntIfIndex",
+				Kind: model.RefNotificationObject,
+			},
+		},
+		nil,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	srv := New(st, "", "test", "/var/lib/blittermib/mibs", "/var/lib/blittermib/data/standard-mibs")
+	refs := []model.Reference{
+		{
+			SourceModule: "IP-MIB", SourceName: "ipAddrChange",
+			TargetModule: "IP-MIB", TargetName: "ipAdEntIfIndex",
+			Kind: model.RefNotificationObject,
+		},
+	}
+	_, idx := srv.buildNotifyVarbinds(ctx, refs)
+
+	if idx.Mode != "indexed" {
+		t.Errorf("Mode = %q, want %q", idx.Mode, "indexed")
+	}
+	if len(idx.Columns) != 1 {
+		t.Fatalf("Columns len = %d, want 1; Columns = %#v", len(idx.Columns), idx.Columns)
+	}
+	if idx.Columns[0].Name != "ipAdEntAddr" {
+		t.Errorf("Columns[0].Name = %q, want %q", idx.Columns[0].Name, "ipAdEntAddr")
+	}
+	if idx.Columns[0].Syntax != "IpAddress" {
+		t.Errorf("Columns[0].Syntax = %q, want %q", idx.Columns[0].Syntax, "IpAddress")
 	}
 }
 

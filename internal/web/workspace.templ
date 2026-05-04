@@ -210,12 +210,19 @@ templ trapSimulatorModal() {
 				</template>
 			</div>
 
-			<div class="simulate-section" x-show="indexMode === 'single-int'">
+			<div class="simulate-section" x-show="indexMode === 'indexed'">
 				<label class="simulate-label">Row identity</label>
-				<div class="simulate-field-row">
-					<label x-text="indexLabel"></label>
-					<input type="number" x-model.number="rowIndex"/>
-				</div>
+				<template x-for="col in indexColumns" :key="col.name">
+					<div class="simulate-field-row">
+						<label x-text="col.name"></label>
+						<template x-if="col.syntax === 'IpAddress'">
+							<input type="text" x-model="col.value" placeholder="10.0.0.1"/>
+						</template>
+						<template x-if="col.syntax !== 'IpAddress'">
+							<input type="number" x-model.number="col.value"/>
+						</template>
+					</div>
+				</template>
 			</div>
 
 			<div class="simulate-section" x-show="indexMode === 'raw-suffix'">
@@ -224,10 +231,11 @@ templ trapSimulatorModal() {
 					<input type="text" x-model="rawSuffix" placeholder=".10.0.0.1"/>
 				</div>
 				<p class="simulate-hint">
-					Composite-index decoding is coming in v1.1.
-					Until then, type the dotted suffix yourself
-					(e.g. <code>.10.0.0.1</code> as an IpAddress
-					index).
+					Multi-column composite indexes and OCTET STRING
+					indexes are decoded in follow-on tiers. Until
+					then, type the dotted suffix yourself (e.g.
+					<code>.6.0.17.34.51.68.85</code> as a
+					length-prefixed MAC address).
 				</p>
 			</div>
 
@@ -838,7 +846,7 @@ templ workspaceDetailBody(view *WorkspaceView, sv *SymbolView) {
 				data-notification-name={ s.Name }
 				data-notification-module={ s.ModuleName }
 				data-trap-index-mode={ sv.TrapIndex.Mode }
-				data-trap-index-label={ sv.TrapIndex.IndexLabel }>
+				data-trap-index-columns={ TrapIndexColumnsJSON(sv.TrapIndex.Columns) }>
 				for _, obj := range sv.NotifyObjects {
 					<li class="notify-object-row"
 						data-name={ obj.Name }

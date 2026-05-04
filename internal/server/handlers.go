@@ -998,15 +998,25 @@ func (s *Server) buildNotifyVarbinds(ctx context.Context, refs []model.Reference
 		// store change could surface a (nil, nil) path; without
 		// the guard the next access panics.
 		if err == nil && entry != nil && len(entry.IndexColumns) == 1 {
-			// Look up the index column's syntax to confirm it's
-			// INTEGER / Integer32.
+			// Look up the index column's syntax to classify it.
+			// Tier 1 recognises single-INTEGER and single-IpAddress
+			// indexes. Anything else (OCTET STRING, OID, BITS,
+			// composite, vendor TCs) drops to raw-suffix until the
+			// follow-on tiers extend this classifier.
 			if idx, err := s.store.GetSymbol(ctx, entry.ModuleName, entry.IndexColumns[0]); err == nil && idx != nil {
-				if isIntegerSyntax(idx.Syntax) {
+				switch {
+				case isIntegerSyntax(idx.Syntax):
 					return out, web.TrapIndexStrategy{
-						Mode:       "single-int",
-						IndexLabel: entry.IndexColumns[0],
+						Mode: "indexed",
 						Columns: []web.TrapIndexColumn{
 							{Name: entry.IndexColumns[0], Syntax: "INTEGER"},
+						},
+					}
+				case isIPAddressSyntax(idx.Syntax):
+					return out, web.TrapIndexStrategy{
+						Mode: "indexed",
+						Columns: []web.TrapIndexColumn{
+							{Name: entry.IndexColumns[0], Syntax: "IpAddress"},
 						},
 					}
 				}
@@ -1014,6 +1024,20 @@ func (s *Server) buildNotifyVarbinds(ctx context.Context, refs []model.Reference
 		}
 	}
 	return out, web.TrapIndexStrategy{Mode: "raw-suffix"}
+}
+
+// isIPAddressSyntax reports whether `s` resolves to an SMI
+// `IpAddress` base type, ignoring trailing constraints. The
+// compile layer expands the IpAddress TC during parse so the
+// syntax string is the literal token; a permissive match also
+// catches any whitespace / constraint suffix that future
+// smidump versions might emit verbatim.
+func isIPAddressSyntax(s string) bool {
+	t := strings.TrimSpace(s)
+	if i := strings.IndexByte(t, '('); i >= 0 {
+		t = strings.TrimSpace(t[:i])
+	}
+	return t == "IpAddress"
 }
 
 // isIntegerSyntax reports whether `s` resolves to an INTEGER /
