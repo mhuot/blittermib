@@ -1005,6 +1005,9 @@ func (s *Server) buildNotifyVarbinds(ctx context.Context, refs []model.Reference
 					return out, web.TrapIndexStrategy{
 						Mode:       "single-int",
 						IndexLabel: entry.IndexColumns[0],
+						Columns: []web.TrapIndexColumn{
+							{Name: entry.IndexColumns[0], Syntax: "INTEGER"},
+						},
 					}
 				}
 			}

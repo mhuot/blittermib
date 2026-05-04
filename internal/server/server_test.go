@@ -1994,6 +1994,85 @@ func bodyString(t *testing.T, resp *http.Response) string {
 	return string(b)
 }
 
+// TestBuildNotifyVarbindsSingleIntegerIndex covers the
+// classifier's single-INTEGER-index path: linkDown's OBJECTS sit
+// under ifEntry whose INDEX is `{ifIndex}` (an INTEGER column),
+// so `buildNotifyVarbinds` should return Mode "single-int" with
+// IndexLabel "ifIndex" and a single INTEGER column descriptor.
+// The Columns slice is the substrate the trap-simulator modal
+// will walk in subsequent tiers to render per-column UI.
+func TestBuildNotifyVarbindsSingleIntegerIndex(t *testing.T) {
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatalf("OpenInMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx := context.Background()
+	if err := st.ReplaceModule(ctx,
+		&model.Module{Name: "IF-MIB", OIDRoot: "1.3.6.1.2.1.31", ParseStatus: model.ParseStatusClean},
+		[]model.Symbol{
+			{
+				ModuleName: "IF-MIB", Name: "ifEntry",
+				OID: "1.3.6.1.2.1.2.2.1", ParentOID: "1.3.6.1.2.1.2.2",
+				Kind: model.KindTableEntry, Syntax: "IfEntry",
+				IndexColumns: []string{"ifIndex"},
+			},
+			{
+				ModuleName: "IF-MIB", Name: "ifIndex",
+				OID: "1.3.6.1.2.1.2.2.1.1", ParentOID: "1.3.6.1.2.1.2.2.1",
+				Kind: model.KindColumn, Syntax: "INTEGER",
+			},
+			{
+				ModuleName: "IF-MIB", Name: "ifAdminStatus",
+				OID: "1.3.6.1.2.1.2.2.1.7", ParentOID: "1.3.6.1.2.1.2.2.1",
+				Kind: model.KindColumn, Syntax: "INTEGER",
+			},
+			{
+				ModuleName: "IF-MIB", Name: "linkDown",
+				OID: "1.3.6.1.6.3.1.1.5.3", ParentOID: "1.3.6.1.6.3.1.1.5",
+				Kind: model.KindNotificationType, Status: model.StatusCurrent,
+			},
+		},
+		[]model.Reference{
+			{
+				SourceModule: "IF-MIB", SourceName: "linkDown",
+				TargetModule: "IF-MIB", TargetName: "ifAdminStatus",
+				Kind: model.RefNotificationObject,
+			},
+		},
+		nil,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	srv := New(st, "", "test", "/var/lib/blittermib/mibs", "/var/lib/blittermib/data/standard-mibs")
+	refs := []model.Reference{
+		{
+			SourceModule: "IF-MIB", SourceName: "linkDown",
+			TargetModule: "IF-MIB", TargetName: "ifAdminStatus",
+			Kind: model.RefNotificationObject,
+		},
+	}
+	_, idx := srv.buildNotifyVarbinds(ctx, refs)
+
+	if idx.Mode != "single-int" {
+		t.Errorf("Mode = %q, want %q", idx.Mode, "single-int")
+	}
+	if idx.IndexLabel != "ifIndex" {
+		t.Errorf("IndexLabel = %q, want %q", idx.IndexLabel, "ifIndex")
+	}
+	if len(idx.Columns) != 1 {
+		t.Fatalf("Columns len = %d, want 1; Columns = %#v", len(idx.Columns), idx.Columns)
+	}
+	if idx.Columns[0].Name != "ifIndex" {
+		t.Errorf("Columns[0].Name = %q, want %q", idx.Columns[0].Name, "ifIndex")
+	}
+	if idx.Columns[0].Syntax != "INTEGER" {
+		t.Errorf("Columns[0].Syntax = %q, want %q", idx.Columns[0].Syntax, "INTEGER")
+	}
+}
+
 // snippet returns a trimmed window of `body` around the first
 // occurrence of `marker` for use in test failure messages —
 // dumping the full body of a workspace page is unhelpful noise.

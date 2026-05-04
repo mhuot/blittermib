@@ -770,6 +770,17 @@ type NotifyVarbind struct {
 	IsColumn       bool
 }
 
+// TrapIndexColumn describes one index column of a notification's
+// parent table-entry, in INDEX-clause order. The trap simulator
+// modal walks this slice to render one type-specific input per
+// column (numeric for INTEGER, dotted-quad for IpAddress, etc.)
+// and composes each varbind's column-OID suffix from the per-
+// column composers.
+type TrapIndexColumn struct {
+	Name   string `json:"name"`
+	Syntax string `json:"syntax"`
+}
+
 // TrapIndexStrategy describes how the trap simulator modal should
 // prompt the user for the row identity that's appended to each
 // column varbind's OID.
@@ -786,9 +797,15 @@ type NotifyVarbind struct {
 // (composite indexes, IpAddress, OCTET STRING, multi-parent
 // notifications). The modal renders a freeform text input where
 // the user types the dotted suffix themselves.
+//
+// `Columns` carries a per-index-column descriptor in INDEX-clause
+// order — populated alongside the legacy Mode/IndexLabel fields
+// for the modes the modal renders per-column. Unused entries are
+// `nil` for "scalar-only" and "raw-suffix".
 type TrapIndexStrategy struct {
 	Mode       string // "single-int" | "scalar-only" | "raw-suffix"
 	IndexLabel string // e.g. "ifIndex" — populated when Mode = "single-int"
+	Columns    []TrapIndexColumn
 }
 
 // SymbolContext captures "where in the SMI tree does this symbol sit"
