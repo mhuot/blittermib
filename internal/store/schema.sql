@@ -40,6 +40,13 @@ CREATE TABLE IF NOT EXISTS symbol (
     default_value  TEXT    NOT NULL DEFAULT '',
     augments       TEXT    NOT NULL DEFAULT '',
     index_columns  TEXT    NOT NULL DEFAULT '',  -- JSON array
+    -- SMIv2 IMPLIED keyword on the row's INDEX clause. Applies to
+    -- the LAST column in `index_columns` (the only column in a
+    -- single-column INDEX). Variable-length OCTET STRING / OID
+    -- indexes are length-prefixed when 0 and bare-bytes when 1 —
+    -- the trap-simulator composer reads this to compose the
+    -- correct dotted suffix.
+    index_implied  INTEGER NOT NULL DEFAULT 0,
     enum_values    TEXT    NOT NULL DEFAULT '[]', -- JSON array of {name,number}
     source_line    INTEGER NOT NULL DEFAULT 0,
     UNIQUE (module_name, name)

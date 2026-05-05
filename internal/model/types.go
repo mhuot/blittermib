@@ -205,6 +205,7 @@ type Symbol struct {
 	DefaultValue string
 	Augments     string
 	IndexColumns []string
+	IndexImplied bool
 	EnumValues   []EnumValue
 	SourceLine   int
 }

@@ -549,15 +549,16 @@ func (s *Store) OIDPath(ctx context.Context, oid string) ([]model.OIDStep, error
 const symbolSelectColumns = `
 	SELECT id, module_name, name, oid, parent_oid, kind, syntax, access, status,
 	       units, reference_text, description, default_value, augments,
-	       index_columns, enum_values, source_line `
+	       index_columns, index_implied, enum_values, source_line `
 
 func scanSymbol(scan func(...any) error) (*model.Symbol, error) {
 	var s model.Symbol
 	var kind, access, status, idxJSON, enumJSON string
+	var impliedFlag int
 	if err := scan(&s.ID, &s.ModuleName, &s.Name, &s.OID, &s.ParentOID,
 		&kind, &s.Syntax, &access, &status, &s.Units, &s.Reference,
 		&s.Description, &s.DefaultValue,
-		&s.Augments, &idxJSON, &enumJSON, &s.SourceLine); err != nil {
+		&s.Augments, &idxJSON, &impliedFlag, &enumJSON, &s.SourceLine); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -567,6 +568,7 @@ func scanSymbol(scan func(...any) error) (*model.Symbol, error) {
 	s.Access = model.Access(access)
 	s.Status = model.Status(status)
 	s.IndexColumns = decodeIndex(idxJSON)
+	s.IndexImplied = impliedFlag != 0
 	s.EnumValues = decodeEnumValues(enumJSON)
 	return &s, nil
 }

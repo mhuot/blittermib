@@ -60,6 +60,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate symbol table: %w", err)
 	}
+	if err := migrateAddIndexImplied(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate index_implied: %w", err)
+	}
 	return &Store{db: db}, nil
 }
 
@@ -121,6 +125,58 @@ func migrateSymbolKindSplit(ctx context.Context, db *sql.DB) error {
 	}
 	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("recreate schema: %w", err)
+	}
+	return nil
+}
+
+// migrateAddIndexImplied adds the `index_implied` column to the
+// symbol table on databases created before SMIv2 IMPLIED was
+// plumbed through the model layer. Unlike `migrateSymbolKindSplit`
+// this is non-destructive: existing rows get the column-default
+// `0` (not implied), which is the safe behavior for any row that
+// pre-dated the field. The loader's startup scan re-imports MIBs
+// from disk anyway, so any rows that should be `1` are corrected
+// on the same boot.
+//
+// SQLite's `ALTER TABLE ADD COLUMN` is in-place and cheap on a
+// table the size we operate on (< 100k rows in any realistic
+// MIB corpus); no rewrite is triggered for a NOT NULL DEFAULT 0
+// addition.
+func migrateAddIndexImplied(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(symbol)`)
+	if err != nil {
+		return fmt.Errorf("inspect symbol columns: %w", err)
+	}
+	hasColumn := false
+	for rows.Next() {
+		var (
+			cid, notnull, pk  int
+			name, ctype, dflt sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan column row: %w", err)
+		}
+		if name.Valid && name.String == "index_implied" {
+			hasColumn = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close table_info rows: %w", err)
+	}
+	if hasColumn {
+		return nil
+	}
+
+	slog.Info("adding index_implied column to symbol table")
+	if _, err := db.ExecContext(ctx,
+		`ALTER TABLE symbol ADD COLUMN index_implied INTEGER NOT NULL DEFAULT 0`,
+	); err != nil {
+		return fmt.Errorf("alter table add index_implied: %w", err)
 	}
 	return nil
 }
@@ -213,8 +269,8 @@ func (s *Store) ReplaceModule(
 		INSERT INTO symbol
 		    (module_name, name, oid, parent_oid, kind, syntax, access, status,
 		     units, reference_text, description, default_value, augments,
-		     index_columns, enum_values, source_line)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		     index_columns, index_implied, enum_values, source_line)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare insert symbol: %w", err)
 	}
@@ -223,12 +279,16 @@ func (s *Store) ReplaceModule(
 	for i := range syms {
 		idxJSON := encodeIndex(syms[i].IndexColumns)
 		enumJSON := encodeEnumValues(syms[i].EnumValues)
+		impliedFlag := 0
+		if syms[i].IndexImplied {
+			impliedFlag = 1
+		}
 		if _, err := insSym.ExecContext(ctx,
 			syms[i].ModuleName, syms[i].Name, syms[i].OID, syms[i].ParentOID,
 			string(syms[i].Kind), syms[i].Syntax, string(syms[i].Access),
 			string(syms[i].Status), syms[i].Units, syms[i].Reference,
 			syms[i].Description, syms[i].DefaultValue,
-			syms[i].Augments, idxJSON, enumJSON, syms[i].SourceLine,
+			syms[i].Augments, idxJSON, impliedFlag, enumJSON, syms[i].SourceLine,
 		); err != nil {
 			return fmt.Errorf("insert symbol %s::%s: %w",
 				syms[i].ModuleName, syms[i].Name, err)

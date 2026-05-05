@@ -119,6 +119,7 @@ func ToModel(smi *SMI) (*model.Module, []model.Symbol) {
 			for _, idx := range row.Linkage.Index {
 				rowSym.IndexColumns = append(rowSym.IndexColumns, idx.Name)
 			}
+			rowSym.IndexImplied = row.Linkage.Implied
 		}
 		syms = append(syms, rowSym)
 		for _, c := range row.Columns {

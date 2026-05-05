@@ -729,3 +729,151 @@ func TestListImportClosureCycle(t *testing.T) {
 		t.Errorf("cycle should still produce 2 entries (P, Q), got %d: %+v", len(closure), closure)
 	}
 }
+
+// TestIndexImpliedRoundtrip pins the new `index_implied` field's
+// model → SQLite → model contract. Two row-entry symbols are
+// inserted with opposite IMPLIED bits; both must scan back with
+// the same value the model went in with.
+//
+// The variable-length OCTET STRING / OID composers in the trap
+// simulator depend on this round-tripping correctly — a regression
+// where IsImplied is silently flipped (or dropped) would produce
+// length-prefixed OIDs where bare-bytes were intended, or vice
+// versa, and the bug would only surface when a user simulated a
+// trap rooted at an IMPLIED-indexed table.
+func TestIndexImpliedRoundtrip(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	mod := &model.Module{
+		Name: "TEST-MIB", OIDRoot: "1.3.6.1.4.1.99999",
+		ParseStatus: model.ParseStatusClean,
+	}
+	syms := []model.Symbol{
+		{
+			ModuleName: "TEST-MIB", Name: "impliedEntry",
+			OID: "1.3.6.1.4.1.99999.1.1", ParentOID: "1.3.6.1.4.1.99999.1",
+			Kind: model.KindTableEntry, Syntax: "ImpliedEntry",
+			IndexColumns: []string{"impliedKey"},
+			IndexImplied: true,
+		},
+		{
+			ModuleName: "TEST-MIB", Name: "regularEntry",
+			OID: "1.3.6.1.4.1.99999.2.1", ParentOID: "1.3.6.1.4.1.99999.2",
+			Kind: model.KindTableEntry, Syntax: "RegularEntry",
+			IndexColumns: []string{"regularKey"},
+			IndexImplied: false,
+		},
+	}
+	if err := s.ReplaceModule(ctx, mod, syms, nil, nil); err != nil {
+		t.Fatalf("ReplaceModule: %v", err)
+	}
+
+	implied, err := s.GetSymbol(ctx, "TEST-MIB", "impliedEntry")
+	if err != nil {
+		t.Fatalf("GetSymbol(impliedEntry): %v", err)
+	}
+	if !implied.IndexImplied {
+		t.Errorf("impliedEntry.IndexImplied = false, want true")
+	}
+
+	regular, err := s.GetSymbol(ctx, "TEST-MIB", "regularEntry")
+	if err != nil {
+		t.Fatalf("GetSymbol(regularEntry): %v", err)
+	}
+	if regular.IndexImplied {
+		t.Errorf("regularEntry.IndexImplied = true, want false")
+	}
+}
+
+// TestMigrateAddIndexImpliedAlters covers the in-place ALTER TABLE
+// migration path: a SQLite database whose `symbol` table predates
+// the `index_implied` column should boot through `Open` cleanly,
+// pick up the new column, and start round-tripping the field
+// without losing prior data.
+//
+// We exercise the migration end-to-end on a file-backed DB by:
+//  1. Opening at a temp path so PRAGMA table_info can be inspected.
+//  2. Dropping and recreating the symbol table without the new
+//     column (simulating a pre-migration shape).
+//  3. Closing and reopening — `migrateAddIndexImplied` must run on
+//     the second open and add the column.
+//  4. Inserting a row through the model layer and reading it back.
+func TestMigrateAddIndexImpliedAlters(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := dir + "/store.db"
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open #1: %v", err)
+	}
+	// Drop and recreate the symbol table without the new column,
+	// simulating the pre-migration shape. The FTS shadow + triggers
+	// drop with it so the recreate doesn't double-up.
+	for _, stmt := range []string{
+		`DROP TRIGGER IF EXISTS symbol_ai`,
+		`DROP TRIGGER IF EXISTS symbol_ad`,
+		`DROP TRIGGER IF EXISTS symbol_au`,
+		`DROP TABLE IF EXISTS symbol_fts`,
+		`DROP TABLE IF EXISTS symbol`,
+		`CREATE TABLE symbol (
+			id             INTEGER PRIMARY KEY,
+			module_name    TEXT    NOT NULL REFERENCES module(name) ON DELETE CASCADE,
+			name           TEXT    NOT NULL,
+			oid            TEXT    NOT NULL DEFAULT '',
+			parent_oid     TEXT    NOT NULL DEFAULT '',
+			kind           TEXT    NOT NULL,
+			syntax         TEXT    NOT NULL DEFAULT '',
+			access         TEXT    NOT NULL DEFAULT '',
+			status         TEXT    NOT NULL DEFAULT '',
+			units          TEXT    NOT NULL DEFAULT '',
+			reference_text TEXT    NOT NULL DEFAULT '',
+			description    TEXT    NOT NULL DEFAULT '',
+			default_value  TEXT    NOT NULL DEFAULT '',
+			augments       TEXT    NOT NULL DEFAULT '',
+			index_columns  TEXT    NOT NULL DEFAULT '',
+			enum_values    TEXT    NOT NULL DEFAULT '[]',
+			source_line    INTEGER NOT NULL DEFAULT 0,
+			UNIQUE (module_name, name)
+		)`,
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-migration shape: %s: %v", stmt, err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close #1: %v", err)
+	}
+
+	// Reopen — migration must add the column non-destructively.
+	s, err = Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open #2 (post-migration): %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	mod := &model.Module{
+		Name: "TEST-MIB", OIDRoot: "1.3.6.1.4.1.99999",
+		ParseStatus: model.ParseStatusClean,
+	}
+	syms := []model.Symbol{
+		{
+			ModuleName: "TEST-MIB", Name: "impliedEntry",
+			OID: "1.3.6.1.4.1.99999.1.1", ParentOID: "1.3.6.1.4.1.99999.1",
+			Kind: model.KindTableEntry, Syntax: "ImpliedEntry",
+			IndexColumns: []string{"impliedKey"},
+			IndexImplied: true,
+		},
+	}
+	if err := s.ReplaceModule(ctx, mod, syms, nil, nil); err != nil {
+		t.Fatalf("ReplaceModule after migration: %v", err)
+	}
+	got, err := s.GetSymbol(ctx, "TEST-MIB", "impliedEntry")
+	if err != nil {
+		t.Fatalf("GetSymbol post-migration: %v", err)
+	}
+	if !got.IndexImplied {
+		t.Errorf("post-migration round-trip: IndexImplied = false, want true")
+	}
+}
