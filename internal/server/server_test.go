@@ -2754,6 +2754,244 @@ func TestBuildNotifyVarbindsOIDIndexImplied(t *testing.T) {
 	}
 }
 
+// TestBuildNotifyVarbindsCompositeIntegerIpAddress covers the
+// canonical two-column INDEX from `ipNetToMediaTable`:
+// `INDEX { ifIndex, ipNetToMediaNetAddress }`. The classifier
+// must walk both columns and emit a Columns slice in INDEX-clause
+// order — INTEGER then IpAddress.
+func TestBuildNotifyVarbindsCompositeIntegerIpAddress(t *testing.T) {
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatalf("OpenInMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx := context.Background()
+	if err := st.ReplaceModule(ctx,
+		&model.Module{Name: "IP-MIB", OIDRoot: "1.3.6.1.2.1.4", ParseStatus: model.ParseStatusClean},
+		[]model.Symbol{
+			{
+				ModuleName: "IP-MIB", Name: "ipNetToMediaEntry",
+				OID: "1.3.6.1.2.1.4.22.1", ParentOID: "1.3.6.1.2.1.4.22",
+				Kind: model.KindTableEntry, Syntax: "IpNetToMediaEntry",
+				IndexColumns: []string{"ipNetToMediaIfIndex", "ipNetToMediaNetAddress"},
+			},
+			{
+				ModuleName: "IP-MIB", Name: "ipNetToMediaIfIndex",
+				OID: "1.3.6.1.2.1.4.22.1.1", ParentOID: "1.3.6.1.2.1.4.22.1",
+				Kind: model.KindColumn, Syntax: "INTEGER",
+			},
+			{
+				ModuleName: "IP-MIB", Name: "ipNetToMediaNetAddress",
+				OID: "1.3.6.1.2.1.4.22.1.3", ParentOID: "1.3.6.1.2.1.4.22.1",
+				Kind: model.KindColumn, Syntax: "IpAddress",
+			},
+			{
+				ModuleName: "IP-MIB", Name: "ipNetToMediaPhysAddress",
+				OID: "1.3.6.1.2.1.4.22.1.2", ParentOID: "1.3.6.1.2.1.4.22.1",
+				Kind: model.KindColumn, Syntax: "PhysAddress",
+			},
+			{
+				ModuleName: "IP-MIB", Name: "arpChange",
+				OID: "1.3.6.1.4.1.99999.1", ParentOID: "1.3.6.1.4.1.99999",
+				Kind: model.KindNotificationType, Status: model.StatusCurrent,
+			},
+		},
+		[]model.Reference{
+			{
+				SourceModule: "IP-MIB", SourceName: "arpChange",
+				TargetModule: "IP-MIB", TargetName: "ipNetToMediaPhysAddress",
+				Kind: model.RefNotificationObject,
+			},
+		},
+		nil,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	srv := New(st, "", "test", "/var/lib/blittermib/mibs", "/var/lib/blittermib/data/standard-mibs")
+	refs := []model.Reference{
+		{
+			SourceModule: "IP-MIB", SourceName: "arpChange",
+			TargetModule: "IP-MIB", TargetName: "ipNetToMediaPhysAddress",
+			Kind: model.RefNotificationObject,
+		},
+	}
+	_, idx := srv.buildNotifyVarbinds(ctx, refs)
+
+	if idx.Mode != "indexed" {
+		t.Fatalf("Mode = %q, want %q", idx.Mode, "indexed")
+	}
+	if len(idx.Columns) != 2 {
+		t.Fatalf("Columns len = %d, want 2; Columns = %#v", len(idx.Columns), idx.Columns)
+	}
+	if idx.Columns[0].Name != "ipNetToMediaIfIndex" || idx.Columns[0].Syntax != "INTEGER" {
+		t.Errorf("Columns[0] = %#v, want {Name:ipNetToMediaIfIndex, Syntax:INTEGER}", idx.Columns[0])
+	}
+	if idx.Columns[1].Name != "ipNetToMediaNetAddress" || idx.Columns[1].Syntax != "IpAddress" {
+		t.Errorf("Columns[1] = %#v, want {Name:ipNetToMediaNetAddress, Syntax:IpAddress}", idx.Columns[1])
+	}
+}
+
+// TestBuildNotifyVarbindsCompositeImpliedAppliesOnlyToLast pins
+// the SMIv2 §7.7 rule: when a multi-column INDEX clause has the
+// IMPLIED keyword, only the LAST column may inherit it. Middle
+// variable-length columns must always force IsImplied=false so
+// they length-prefix on the wire — there's no other way to
+// delimit a variable-length component in the middle of the OID.
+//
+// Setup: INDEX { vendorTag (variable OCTET STRING), vendorPath (OID) }
+// with parent entry IndexImplied=true. Expect Columns[0].IsImplied
+// = false (mid, must length-prefix); Columns[1].IsImplied = true
+// (last, inherits IMPLIED).
+func TestBuildNotifyVarbindsCompositeImpliedAppliesOnlyToLast(t *testing.T) {
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatalf("OpenInMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx := context.Background()
+	if err := st.ReplaceModule(ctx,
+		&model.Module{Name: "VENDOR-MIB", OIDRoot: "1.3.6.1.4.1.99999", ParseStatus: model.ParseStatusClean},
+		[]model.Symbol{
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorEntry",
+				OID: "1.3.6.1.4.1.99999.1.1", ParentOID: "1.3.6.1.4.1.99999.1",
+				Kind: model.KindTableEntry, Syntax: "VendorEntry",
+				IndexColumns: []string{"vendorTag", "vendorPath"},
+				IndexImplied: true,
+			},
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorTag",
+				OID: "1.3.6.1.4.1.99999.1.1.1", ParentOID: "1.3.6.1.4.1.99999.1.1",
+				Kind: model.KindColumn, Syntax: "OCTET STRING (SIZE(0..32))",
+			},
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorPath",
+				OID: "1.3.6.1.4.1.99999.1.1.2", ParentOID: "1.3.6.1.4.1.99999.1.1",
+				Kind: model.KindColumn, Syntax: "OBJECT IDENTIFIER",
+			},
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorState",
+				OID: "1.3.6.1.4.1.99999.1.1.3", ParentOID: "1.3.6.1.4.1.99999.1.1",
+				Kind: model.KindColumn, Syntax: "INTEGER",
+			},
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorChange",
+				OID: "1.3.6.1.4.1.99999.0.1", ParentOID: "1.3.6.1.4.1.99999.0",
+				Kind: model.KindNotificationType, Status: model.StatusCurrent,
+			},
+		},
+		[]model.Reference{
+			{
+				SourceModule: "VENDOR-MIB", SourceName: "vendorChange",
+				TargetModule: "VENDOR-MIB", TargetName: "vendorState",
+				Kind: model.RefNotificationObject,
+			},
+		},
+		nil,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	srv := New(st, "", "test", "/var/lib/blittermib/mibs", "/var/lib/blittermib/data/standard-mibs")
+	refs := []model.Reference{
+		{
+			SourceModule: "VENDOR-MIB", SourceName: "vendorChange",
+			TargetModule: "VENDOR-MIB", TargetName: "vendorState",
+			Kind: model.RefNotificationObject,
+		},
+	}
+	_, idx := srv.buildNotifyVarbinds(ctx, refs)
+
+	if idx.Mode != "indexed" {
+		t.Fatalf("Mode = %q, want %q", idx.Mode, "indexed")
+	}
+	if len(idx.Columns) != 2 {
+		t.Fatalf("Columns len = %d, want 2", len(idx.Columns))
+	}
+	if idx.Columns[0].IsImplied {
+		t.Errorf("Columns[0] (mid, variable OCTET STRING) IsImplied = true, want false (must length-prefix on the wire)")
+	}
+	if !idx.Columns[1].IsImplied {
+		t.Errorf("Columns[1] (last, OID) IsImplied = false, want true (inherits IndexImplied=true)")
+	}
+}
+
+// TestBuildNotifyVarbindsCompositeUnknownColumnFallsBack pins
+// the all-or-nothing classifier contract: if any column in a
+// multi-column INDEX has a syntax the classifier doesn't
+// recognise, the entire row drops to raw-suffix mode. Partial
+// classification would compose a malformed dotted suffix —
+// raw-suffix preserves user agency at the cost of one freeform
+// input.
+func TestBuildNotifyVarbindsCompositeUnknownColumnFallsBack(t *testing.T) {
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatalf("OpenInMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx := context.Background()
+	if err := st.ReplaceModule(ctx,
+		&model.Module{Name: "VENDOR-MIB", OIDRoot: "1.3.6.1.4.1.99999", ParseStatus: model.ParseStatusClean},
+		[]model.Symbol{
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorEntry",
+				OID: "1.3.6.1.4.1.99999.1.1", ParentOID: "1.3.6.1.4.1.99999.1",
+				Kind: model.KindTableEntry, Syntax: "VendorEntry",
+				IndexColumns: []string{"vendorTag", "vendorWeird"},
+			},
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorTag",
+				OID: "1.3.6.1.4.1.99999.1.1.1", ParentOID: "1.3.6.1.4.1.99999.1.1",
+				Kind: model.KindColumn, Syntax: "INTEGER",
+			},
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorWeird",
+				OID: "1.3.6.1.4.1.99999.1.1.2", ParentOID: "1.3.6.1.4.1.99999.1.1",
+				Kind: model.KindColumn, Syntax: "VendorOpaqueTC",
+			},
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorState",
+				OID: "1.3.6.1.4.1.99999.1.1.3", ParentOID: "1.3.6.1.4.1.99999.1.1",
+				Kind: model.KindColumn, Syntax: "INTEGER",
+			},
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorChange",
+				OID: "1.3.6.1.4.1.99999.0.1", ParentOID: "1.3.6.1.4.1.99999.0",
+				Kind: model.KindNotificationType, Status: model.StatusCurrent,
+			},
+		},
+		[]model.Reference{
+			{
+				SourceModule: "VENDOR-MIB", SourceName: "vendorChange",
+				TargetModule: "VENDOR-MIB", TargetName: "vendorState",
+				Kind: model.RefNotificationObject,
+			},
+		},
+		nil,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	srv := New(st, "", "test", "/var/lib/blittermib/mibs", "/var/lib/blittermib/data/standard-mibs")
+	refs := []model.Reference{
+		{
+			SourceModule: "VENDOR-MIB", SourceName: "vendorChange",
+			TargetModule: "VENDOR-MIB", TargetName: "vendorState",
+			Kind: model.RefNotificationObject,
+		},
+	}
+	_, idx := srv.buildNotifyVarbinds(ctx, refs)
+
+	if idx.Mode != "raw-suffix" {
+		t.Errorf("Mode = %q, want %q (one unknown column → all-or-nothing fallback)",
+			idx.Mode, "raw-suffix")
+	}
+}
+
 // seedModuleWithSymbols is a small helper used by the type-defs
 // integration tests to build an in-memory store and an httptest
 // server with one module's symbols. Returns the test server URL.

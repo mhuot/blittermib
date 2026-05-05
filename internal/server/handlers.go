@@ -1025,110 +1025,114 @@ func (s *Server) buildNotifyVarbinds(ctx context.Context, refs []model.Reference
 		// returns a non-nil pointer when err is nil, but a future
 		// store change could surface a (nil, nil) path; without
 		// the guard the next access panics.
-		if err == nil && entry != nil && len(entry.IndexColumns) == 1 {
-			// Look up the index column's syntax to classify it.
-			// Single-column INDEX classification ladder:
-			//   INTEGER / IpAddress           — Tier 1
-			//   OCTET STRING (fixed)          — Tier 2 commit 1
-			//   OCTET STRING (variable) / OID — Tier 2 commit 3
-			// BITS, composite (multi-column), and vendor TCs the
-			// classifier doesn't recognise still drop to
-			// raw-suffix mode.
-			if idx, err := s.store.GetSymbol(ctx, entry.ModuleName, entry.IndexColumns[0]); err == nil && idx != nil {
-				switch {
-				case isIntegerSyntax(idx.Syntax):
-					return out, web.TrapIndexStrategy{
-						Mode: "indexed",
-						Columns: []web.TrapIndexColumn{
-							{Name: entry.IndexColumns[0], Syntax: "INTEGER"},
-						},
-					}
-				case isIPAddressSyntax(idx.Syntax):
-					return out, web.TrapIndexStrategy{
-						Mode: "indexed",
-						Columns: []web.TrapIndexColumn{
-							{Name: entry.IndexColumns[0], Syntax: "IpAddress"},
-						},
-					}
-				case isOctetStringSyntax(idx.Syntax):
-					// Fixed-size when SIZE(N) resolves equal lo/hi;
-					// otherwise variable. IMPLIED is irrelevant for
-					// fixed-size (no length prefix either way), so
-					// it pins to literal `false` on that path.
-					// Variable inherits the parent entry's IMPLIED
-					// bit so the JS composer can choose between
-					// length-prefixed and bare-bytes encoding.
-					lo, hi, sizeOk := extractSizeConstraint(idx.Syntax)
-					fixed := sizeOk && lo == hi && lo > 0
-					if fixed {
-						return out, web.TrapIndexStrategy{
-							Mode: "indexed",
-							Columns: []web.TrapIndexColumn{
-								{
-									Name:      entry.IndexColumns[0],
-									Syntax:    "OCTET STRING",
-									SizeMin:   lo,
-									SizeMax:   hi,
-									IsImplied: false,
-								},
-							},
-						}
-					}
-					return out, web.TrapIndexStrategy{
-						Mode: "indexed",
-						Columns: []web.TrapIndexColumn{
-							{
-								Name:      entry.IndexColumns[0],
-								Syntax:    "OCTET STRING",
-								SizeMin:   lo,
-								SizeMax:   hi,
-								IsImplied: entry.IndexImplied,
-							},
-						},
-					}
-				case isOIDSyntax(idx.Syntax):
-					// OBJECT IDENTIFIER index — variable-length by
-					// nature. IMPLIED follows the parent entry; the
-					// JS composer length-prefixes when not IMPLIED
-					// and emits bare segments when IMPLIED.
-					return out, web.TrapIndexStrategy{
-						Mode: "indexed",
-						Columns: []web.TrapIndexColumn{
-							{
-								Name:      entry.IndexColumns[0],
-								Syntax:    "OBJECT IDENTIFIER",
-								IsImplied: entry.IndexImplied,
-							},
-						},
-					}
-				case isBitsSyntax(idx.Syntax):
-					// BITS encodes on the wire as a fixed-length
-					// OCTET STRING whose byte count covers the
-					// highest-numbered named bit. IMPLIED is
-					// inert (length-prefix is absent regardless),
-					// so it pins to literal `false` on this path.
-					// An empty BITS definition (no named bits)
-					// drops through to raw-suffix — there's no
-					// usable size to render.
-					if size := bitsBytes(idx.EnumValues); size > 0 {
-						return out, web.TrapIndexStrategy{
-							Mode: "indexed",
-							Columns: []web.TrapIndexColumn{
-								{
-									Name:      entry.IndexColumns[0],
-									Syntax:    "BITS",
-									SizeMin:   size,
-									SizeMax:   size,
-									IsImplied: false,
-								},
-							},
-						}
-					}
+		if err == nil && entry != nil && len(entry.IndexColumns) >= 1 {
+			// Walk every index column in INDEX-clause order and
+			// classify each one. SMIv2's IMPLIED keyword applies
+			// only to the LAST column (RFC 2578 §7.7) — middle
+			// variable-length columns must be length-prefixed
+			// regardless, otherwise the encoder has no way to
+			// delimit them. The `impliedForCol` argument carries
+			// that "last column only" constraint into each
+			// classification.
+			//
+			// If any column fails to classify (unknown syntax,
+			// unloaded symbol, empty BITS list, etc.) the entire
+			// INDEX clause drops to raw-suffix — partial
+			// classification would compose a malformed suffix
+			// downstream.
+			cols := make([]web.TrapIndexColumn, 0, len(entry.IndexColumns))
+			classified := true
+			for i, colName := range entry.IndexColumns {
+				isLast := i == len(entry.IndexColumns)-1
+				impliedForCol := isLast && entry.IndexImplied
+				col, ok := s.classifyIndexColumn(ctx, entry.ModuleName, colName, impliedForCol)
+				if !ok {
+					classified = false
+					break
+				}
+				cols = append(cols, col)
+			}
+			if classified && len(cols) > 0 {
+				return out, web.TrapIndexStrategy{
+					Mode:    "indexed",
+					Columns: cols,
 				}
 			}
 		}
 	}
 	return out, web.TrapIndexStrategy{Mode: "raw-suffix"}
+}
+
+// classifyIndexColumn classifies a single index column's syntax
+// into a `web.TrapIndexColumn` descriptor. The `impliedForCol`
+// argument is the IsImplied value to attach when the syntax is
+// variable-length: in a multi-column INDEX clause, only the LAST
+// column may inherit the parent entry's IMPLIED bit; middle
+// variable columns must always force `IsImplied=false` so they
+// length-prefix on the wire.
+//
+// Returns ok=false when the column's symbol can't be loaded, the
+// syntax doesn't match any classifier branch, or a degenerate
+// case (empty BITS list) makes the descriptor unusable. Callers
+// drop the entire INDEX clause to raw-suffix on a single false
+// — partial classification would yield a malformed suffix.
+func (s *Server) classifyIndexColumn(
+	ctx context.Context,
+	moduleName, columnName string,
+	impliedForCol bool,
+) (web.TrapIndexColumn, bool) {
+	idx, err := s.store.GetSymbol(ctx, moduleName, columnName)
+	if err != nil || idx == nil {
+		return web.TrapIndexColumn{}, false
+	}
+	switch {
+	case isIntegerSyntax(idx.Syntax):
+		return web.TrapIndexColumn{
+			Name:   columnName,
+			Syntax: "INTEGER",
+		}, true
+	case isIPAddressSyntax(idx.Syntax):
+		return web.TrapIndexColumn{
+			Name:   columnName,
+			Syntax: "IpAddress",
+		}, true
+	case isOctetStringSyntax(idx.Syntax):
+		lo, hi, sizeOk := extractSizeConstraint(idx.Syntax)
+		fixed := sizeOk && lo == hi && lo > 0
+		if fixed {
+			return web.TrapIndexColumn{
+				Name:      columnName,
+				Syntax:    "OCTET STRING",
+				SizeMin:   lo,
+				SizeMax:   hi,
+				IsImplied: false,
+			}, true
+		}
+		return web.TrapIndexColumn{
+			Name:      columnName,
+			Syntax:    "OCTET STRING",
+			SizeMin:   lo,
+			SizeMax:   hi,
+			IsImplied: impliedForCol,
+		}, true
+	case isOIDSyntax(idx.Syntax):
+		return web.TrapIndexColumn{
+			Name:      columnName,
+			Syntax:    "OBJECT IDENTIFIER",
+			IsImplied: impliedForCol,
+		}, true
+	case isBitsSyntax(idx.Syntax):
+		if size := bitsBytes(idx.EnumValues); size > 0 {
+			return web.TrapIndexColumn{
+				Name:      columnName,
+				Syntax:    "BITS",
+				SizeMin:   size,
+				SizeMax:   size,
+				IsImplied: false,
+			}, true
+		}
+	}
+	return web.TrapIndexColumn{}, false
 }
 
 // isIPAddressSyntax reports whether `s` resolves to an SMI
