@@ -2528,6 +2528,161 @@ func TestBuildNotifyVarbindsOIDIndex(t *testing.T) {
 	}
 }
 
+// TestBuildNotifyVarbindsBitsIndex covers a single-column BITS
+// index: the classifier derives the column's byte count from
+// the named-bits list (`ceil((maxBit+1)/8)`) and emits an
+// indexed descriptor with Syntax="BITS", SizeMin=SizeMax set to
+// the derived byte count, and IsImplied=false. The JS composer
+// reuses the fixed-OCTET-STRING path since BITS encodes
+// identically on the wire.
+func TestBuildNotifyVarbindsBitsIndex(t *testing.T) {
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatalf("OpenInMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx := context.Background()
+	if err := st.ReplaceModule(ctx,
+		&model.Module{Name: "VENDOR-MIB", OIDRoot: "1.3.6.1.4.1.99999", ParseStatus: model.ParseStatusClean},
+		[]model.Symbol{
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorEntry",
+				OID: "1.3.6.1.4.1.99999.1.1", ParentOID: "1.3.6.1.4.1.99999.1",
+				Kind: model.KindTableEntry, Syntax: "VendorEntry",
+				IndexColumns: []string{"vendorFlags"},
+			},
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorFlags",
+				OID:       "1.3.6.1.4.1.99999.1.1.1",
+				ParentOID: "1.3.6.1.4.1.99999.1.1",
+				Kind:      model.KindColumn, Syntax: "BITS",
+				EnumValues: []model.EnumValue{
+					{Name: "red", Number: 0},
+					{Name: "green", Number: 1},
+					{Name: "blue", Number: 2},
+				},
+			},
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorState",
+				OID: "1.3.6.1.4.1.99999.1.1.2", ParentOID: "1.3.6.1.4.1.99999.1.1",
+				Kind: model.KindColumn, Syntax: "INTEGER",
+			},
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorChange",
+				OID: "1.3.6.1.4.1.99999.0.1", ParentOID: "1.3.6.1.4.1.99999.0",
+				Kind: model.KindNotificationType, Status: model.StatusCurrent,
+			},
+		},
+		[]model.Reference{
+			{
+				SourceModule: "VENDOR-MIB", SourceName: "vendorChange",
+				TargetModule: "VENDOR-MIB", TargetName: "vendorState",
+				Kind: model.RefNotificationObject,
+			},
+		},
+		nil,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	srv := New(st, "", "test", "/var/lib/blittermib/mibs", "/var/lib/blittermib/data/standard-mibs")
+	refs := []model.Reference{
+		{
+			SourceModule: "VENDOR-MIB", SourceName: "vendorChange",
+			TargetModule: "VENDOR-MIB", TargetName: "vendorState",
+			Kind: model.RefNotificationObject,
+		},
+	}
+	_, idx := srv.buildNotifyVarbinds(ctx, refs)
+
+	if idx.Mode != "indexed" {
+		t.Errorf("Mode = %q, want %q", idx.Mode, "indexed")
+	}
+	if len(idx.Columns) != 1 {
+		t.Fatalf("Columns len = %d, want 1", len(idx.Columns))
+	}
+	col := idx.Columns[0]
+	if col.Syntax != "BITS" {
+		t.Errorf("Syntax = %q, want %q", col.Syntax, "BITS")
+	}
+	// Three bits, max bit 2 → ceil(3/8) = 1 byte.
+	if col.SizeMin != 1 || col.SizeMax != 1 {
+		t.Errorf("size = (%d, %d), want (1, 1) for max-bit=2",
+			col.SizeMin, col.SizeMax)
+	}
+	if col.IsImplied {
+		t.Errorf("IsImplied = true, want false (BITS is fixed-size, IMPLIED is inert)")
+	}
+}
+
+// TestBuildNotifyVarbindsBitsIndexEmptyFallsBack covers the
+// degenerate case of an empty BITS definition (no named bits).
+// `bitsBytes` returns 0 and the classifier drops to raw-suffix —
+// there's no usable size to render, and emitting an indexed
+// descriptor with size 0 would break the composer.
+func TestBuildNotifyVarbindsBitsIndexEmptyFallsBack(t *testing.T) {
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatalf("OpenInMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx := context.Background()
+	if err := st.ReplaceModule(ctx,
+		&model.Module{Name: "VENDOR-MIB", OIDRoot: "1.3.6.1.4.1.99999", ParseStatus: model.ParseStatusClean},
+		[]model.Symbol{
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorEntry",
+				OID: "1.3.6.1.4.1.99999.1.1", ParentOID: "1.3.6.1.4.1.99999.1",
+				Kind: model.KindTableEntry, Syntax: "VendorEntry",
+				IndexColumns: []string{"vendorFlags"},
+			},
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorFlags",
+				OID: "1.3.6.1.4.1.99999.1.1.1", ParentOID: "1.3.6.1.4.1.99999.1.1",
+				Kind: model.KindColumn, Syntax: "BITS",
+				// No EnumValues — empty BITS definition.
+			},
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorState",
+				OID: "1.3.6.1.4.1.99999.1.1.2", ParentOID: "1.3.6.1.4.1.99999.1.1",
+				Kind: model.KindColumn, Syntax: "INTEGER",
+			},
+			{
+				ModuleName: "VENDOR-MIB", Name: "vendorChange",
+				OID: "1.3.6.1.4.1.99999.0.1", ParentOID: "1.3.6.1.4.1.99999.0",
+				Kind: model.KindNotificationType, Status: model.StatusCurrent,
+			},
+		},
+		[]model.Reference{
+			{
+				SourceModule: "VENDOR-MIB", SourceName: "vendorChange",
+				TargetModule: "VENDOR-MIB", TargetName: "vendorState",
+				Kind: model.RefNotificationObject,
+			},
+		},
+		nil,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	srv := New(st, "", "test", "/var/lib/blittermib/mibs", "/var/lib/blittermib/data/standard-mibs")
+	refs := []model.Reference{
+		{
+			SourceModule: "VENDOR-MIB", SourceName: "vendorChange",
+			TargetModule: "VENDOR-MIB", TargetName: "vendorState",
+			Kind: model.RefNotificationObject,
+		},
+	}
+	_, idx := srv.buildNotifyVarbinds(ctx, refs)
+
+	if idx.Mode != "raw-suffix" {
+		t.Errorf("Mode = %q, want %q (empty BITS has no usable size)",
+			idx.Mode, "raw-suffix")
+	}
+}
+
 // TestBuildNotifyVarbindsOIDIndexImplied is the IMPLIED variant
 // of the OID test: parent entry's IndexImplied flag flows through
 // to the column descriptor, telling the JS composer to drop the

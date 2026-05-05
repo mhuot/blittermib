@@ -3606,10 +3606,23 @@ main.page:has(.workspace-grid) .content-inner,
   color: var(--severity-red);
   font-size: 11px;
 }
+.simulate-column-error {
+  display: block;
+  margin-top: 2px;
+}
 .simulate-hint {
   font-size: 11px;
   color: var(--fg-3);
   margin: 0;
+}
+.simulate-preview {
+  font-size: 11px;
+  color: var(--fg-3);
+  margin: 6px 0 0;
+}
+.simulate-preview code {
+  font-family: var(--mono, monospace);
+  color: var(--fg-1);
 }
 .simulate-varbind {
   display: flex;

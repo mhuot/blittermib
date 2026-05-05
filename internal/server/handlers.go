@@ -1101,6 +1101,29 @@ func (s *Server) buildNotifyVarbinds(ctx context.Context, refs []model.Reference
 							},
 						},
 					}
+				case isBitsSyntax(idx.Syntax):
+					// BITS encodes on the wire as a fixed-length
+					// OCTET STRING whose byte count covers the
+					// highest-numbered named bit. IMPLIED is
+					// inert (length-prefix is absent regardless),
+					// so it pins to literal `false` on this path.
+					// An empty BITS definition (no named bits)
+					// drops through to raw-suffix — there's no
+					// usable size to render.
+					if size := bitsBytes(idx.EnumValues); size > 0 {
+						return out, web.TrapIndexStrategy{
+							Mode: "indexed",
+							Columns: []web.TrapIndexColumn{
+								{
+									Name:      entry.IndexColumns[0],
+									Syntax:    "BITS",
+									SizeMin:   size,
+									SizeMax:   size,
+									IsImplied: false,
+								},
+							},
+						}
+					}
 				}
 			}
 		}

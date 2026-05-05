@@ -1,6 +1,10 @@
 package server
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/no42-org/blittermib/internal/model"
+)
 
 // TestExtractSizeConstraint pins the regex-style parser's contract
 // for every recognised SIZE-constraint shape plus the rejection
@@ -109,6 +113,105 @@ func TestIsOctetStringSyntax(t *testing.T) {
 		if isOctetStringSyntax(s) {
 			t.Errorf("isOctetStringSyntax(%q) = true; want false", s)
 		}
+	}
+}
+
+// TestIsBitsSyntax pins the BITS classifier — canonical SMI
+// spelling, smidump basetype spelling, and trailing `{ name(n),
+// … }` bodies all classify as BITS; everything else falls through.
+func TestIsBitsSyntax(t *testing.T) {
+	yes := []string{
+		"BITS",
+		"Bits",
+		"BITS { red(0), green(1), blue(2) }",
+		"  BITS  ",
+	}
+	no := []string{
+		"INTEGER",
+		"OCTET STRING",
+		"IpAddress",
+		"OBJECT IDENTIFIER",
+		"MacAddress",
+	}
+	for _, s := range yes {
+		if !isBitsSyntax(s) {
+			t.Errorf("isBitsSyntax(%q) = false; want true", s)
+		}
+	}
+	for _, s := range no {
+		if isBitsSyntax(s) {
+			t.Errorf("isBitsSyntax(%q) = true; want false", s)
+		}
+	}
+}
+
+// TestBitsBytes pins the named-bits → byte-count derivation.
+// Wire encoding of BITS is a fixed-length OCTET STRING covering
+// the highest-numbered named bit, so size = ceil((maxBit+1)/8).
+func TestBitsBytes(t *testing.T) {
+	cases := []struct {
+		name  string
+		enums []model.EnumValue
+		want  int
+	}{
+		{
+			name:  "empty bit list yields zero (caller drops to raw-suffix)",
+			enums: nil,
+			want:  0,
+		},
+		{
+			name: "single bit zero needs one byte",
+			enums: []model.EnumValue{
+				{Name: "flag", Number: 0},
+			},
+			want: 1,
+		},
+		{
+			name: "max bit 7 fits in one byte",
+			enums: []model.EnumValue{
+				{Name: "a", Number: 0},
+				{Name: "h", Number: 7},
+			},
+			want: 1,
+		},
+		{
+			name: "max bit 8 spills to two bytes",
+			enums: []model.EnumValue{
+				{Name: "low", Number: 0},
+				{Name: "ninth", Number: 8},
+			},
+			want: 2,
+		},
+		{
+			name: "max bit 15 fills two bytes exactly",
+			enums: []model.EnumValue{
+				{Name: "msb", Number: 15},
+			},
+			want: 2,
+		},
+		{
+			name: "max bit 16 spills to three bytes",
+			enums: []model.EnumValue{
+				{Name: "edge", Number: 16},
+			},
+			want: 3,
+		},
+		{
+			name: "out-of-order bit numbers — max wins",
+			enums: []model.EnumValue{
+				{Name: "high", Number: 23},
+				{Name: "low", Number: 1},
+				{Name: "mid", Number: 9},
+			},
+			want: 3,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := bitsBytes(c.enums); got != c.want {
+				t.Errorf("bitsBytes(%v) = %d; want %d", c.enums, got, c.want)
+			}
+		})
 	}
 }
 

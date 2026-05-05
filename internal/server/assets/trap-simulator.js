@@ -51,7 +51,7 @@ window.trapSimulator = (function () {
 			var syntax = String(col.syntax || '');
 			var defaultValue;
 			if (syntax === 'IpAddress' || syntax === 'OCTET STRING' ||
-				syntax === 'OBJECT IDENTIFIER') {
+				syntax === 'OBJECT IDENTIFIER' || syntax === 'BITS') {
 				// Text-shaped columns start blank so the user
 				// sees the placeholder hint rather than a
 				// numeric `0` they have to clear before typing.
@@ -300,6 +300,15 @@ window.trapSimulator = (function () {
 				if (col.syntax === 'OBJECT IDENTIFIER') {
 					return this.composeOID(col);
 				}
+				if (col.syntax === 'BITS') {
+					// BITS encodes as a fixed-length OCTET STRING
+					// whose byte count comes from the bits-list's
+					// highest-numbered named bit (the server
+					// classifier writes it into sizeMin === sizeMax).
+					// Same parsing + validation as fixed OCTET STRING
+					// — the only delta is the source of the size.
+					return this.composeOctetStringFixed(col);
+				}
 				return this.composeInteger(col.value);
 			},
 
@@ -468,6 +477,85 @@ window.trapSimulator = (function () {
 					parts.push(hex);
 				}
 				return parts.join(':');
+			},
+
+			// validateColumn returns a human-readable error string
+			// for a per-column input, or '' when the input is valid.
+			// Bound to `x-on:input` on each column's `<input>` so the
+			// error surface updates live as the user types — matches
+			// design.md Decision 6's "live validation" contract.
+			//
+			// The validator mirrors the composer's parse rules but
+			// returns a sentence the user can act on (`Expected 6
+			// bytes, got 4.`) rather than the `.<ERROR>` sentinel
+			// the composer emits into the OID. The two stay in
+			// lock-step: any input where `validateColumn` returns
+			// '' must produce a non-`<ERROR>` suffix from
+			// `composeColumn`, and vice versa.
+			validateColumn: function (col) {
+				if (col.syntax === 'IpAddress') {
+					var v = String(col.value == null ? '' : col.value).trim();
+					if (v === '') return 'Enter a dotted-quad IP (e.g. 10.0.0.1).';
+					if (this.composeIpAddress(v) === '.<ERROR>') {
+						return 'IP must be four octets in 0..255 (a.b.c.d).';
+					}
+					return '';
+				}
+				if (col.syntax === 'OCTET STRING' || col.syntax === 'BITS') {
+					var raw = String(col.value == null ? '' : col.value).trim();
+					if (raw === '') return 'Enter hex bytes (e.g. 00:11:22:33).';
+					var hex = raw.replace(/[\s:\-]/g, '');
+					if (hex.length === 0) return 'Empty value.';
+					if (!/^[0-9a-fA-F]+$/.test(hex)) {
+						return 'Only hex digits 0-9, a-f permitted.';
+					}
+					if (hex.length % 2 !== 0) {
+						return 'Hex byte count must be even (two chars per byte).';
+					}
+					var bytes = hex.length / 2;
+					var lo = Number(col.sizeMin) || 0;
+					var hi = Number(col.sizeMax) || 0;
+					if (lo > 0 && lo === hi) {
+						if (bytes !== lo) {
+							return 'Expected ' + lo + ' bytes, got ' + bytes + '.';
+						}
+					} else {
+						if (lo > 0 && bytes < lo) {
+							return 'At least ' + lo + ' bytes required.';
+						}
+						if (hi > 0 && bytes > hi) {
+							return 'At most ' + hi + ' bytes permitted.';
+						}
+					}
+					return '';
+				}
+				if (col.syntax === 'OBJECT IDENTIFIER') {
+					var v = String(col.value == null ? '' : col.value).trim();
+					if (v === '') return 'Enter a dotted OID (e.g. .1.3.6.1.4.1.9).';
+					if (this.composeOID(col) === '.<ERROR>') {
+						return 'OID must be a dotted sequence of non-negative integers.';
+					}
+					return '';
+				}
+				// INTEGER / fallback — accept anything that parses
+				// finite. Empty stays valid (defaults to 0/1 in
+				// composeInteger), matching the v1.0 single-int UX.
+				return '';
+			},
+
+			// composedSuffixPreview walks indexColumns and concatenates
+			// each per-column composer's output, giving the user an
+			// at-a-glance view of the dotted suffix that will be
+			// appended to every column varbind's OID. Empty when the
+			// modal isn't in indexed mode (scalar-only and raw-suffix
+			// have no per-column row identity to preview).
+			composedSuffixPreview: function () {
+				if (this.indexMode !== 'indexed') return '';
+				var parts = '';
+				for (var i = 0; i < this.indexColumns.length; i++) {
+					parts += this.composeColumn(this.indexColumns[i]);
+				}
+				return parts;
 			},
 
 			formatValue: function (vb) {

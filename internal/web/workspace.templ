@@ -219,17 +219,21 @@ templ trapSimulatorModal() {
 						<template x-if="col.syntax === 'IpAddress'">
 							<input type="text" x-model="col.value" placeholder="10.0.0.1"/>
 						</template>
-						<template x-if="col.syntax === 'OCTET STRING'">
+						<template x-if="col.syntax === 'OCTET STRING' || col.syntax === 'BITS'">
 							<input type="text" x-model="col.value" :placeholder="octetPlaceholder(col)"/>
 						</template>
 						<template x-if="col.syntax === 'OBJECT IDENTIFIER'">
 							<input type="text" x-model="col.value" placeholder=".1.3.6.1.4.1.9"/>
 						</template>
-						<template x-if="col.syntax !== 'IpAddress' && col.syntax !== 'OCTET STRING' && col.syntax !== 'OBJECT IDENTIFIER'">
+						<template x-if="col.syntax !== 'IpAddress' && col.syntax !== 'OCTET STRING' && col.syntax !== 'OBJECT IDENTIFIER' && col.syntax !== 'BITS'">
 							<input type="number" x-model.number="col.value"/>
 						</template>
+						<span class="simulate-error simulate-column-error" x-show="validateColumn(col)" x-text="validateColumn(col)"></span>
 					</div>
 				</template>
+				<p class="simulate-preview">
+					Composed suffix: <code x-text="composedSuffixPreview() || '(empty)'"></code>
+				</p>
 			</div>
 
 			<div class="simulate-section" x-show="indexMode === 'raw-suffix'">
@@ -238,11 +242,10 @@ templ trapSimulatorModal() {
 					<input type="text" x-model="rawSuffix" placeholder=".10.0.0.1"/>
 				</div>
 				<p class="simulate-hint">
-					Multi-column composite indexes and BITS indexes
-					are decoded in a follow-on tier. Until then, type
-					the dotted suffix yourself (e.g.
-					<code>.6.0.17.34.51.68.85</code> as a
-					length-prefixed MAC address).
+					Multi-column composite indexes are decoded in a
+					follow-on tier. Until then, type the dotted suffix
+					yourself (e.g. <code>.6.0.17.34.51.68.85</code> as
+					a length-prefixed MAC address).
 				</p>
 			</div>
 

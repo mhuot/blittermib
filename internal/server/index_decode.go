@@ -3,6 +3,8 @@ package server
 import (
 	"strconv"
 	"strings"
+
+	"github.com/no42-org/blittermib/internal/model"
 )
 
 // extractSizeConstraint parses an SMI syntax string for a SIZE
@@ -153,4 +155,43 @@ func isOIDSyntax(s string) bool {
 		return true
 	}
 	return false
+}
+
+// isBitsSyntax reports whether `s` resolves to a `BITS` base
+// type. Recognises the canonical SMI spelling and the smidump
+// XML basetype spelling (`Bits`). Strips any trailing inline
+// `{ name(n), …  }` body or constraint group before matching.
+func isBitsSyntax(s string) bool {
+	t := strings.TrimSpace(s)
+	if i := strings.IndexByte(t, '{'); i >= 0 {
+		t = strings.TrimSpace(t[:i])
+	}
+	if i := strings.IndexByte(t, '('); i >= 0 {
+		t = strings.TrimSpace(t[:i])
+	}
+	switch t {
+	case "BITS", "Bits":
+		return true
+	}
+	return false
+}
+
+// bitsBytes returns the byte length of a BITS-typed value given
+// its named-bits list. The wire encoding of BITS is a fixed-
+// length OCTET STRING whose length covers the highest-numbered
+// bit — `ceil((maxBit + 1) / 8)`. Returns 0 when the bit list
+// is empty (an empty BITS definition is malformed; the caller
+// drops to raw-suffix in that case rather than emit a size-0
+// indexed descriptor that the modal can't render usefully).
+func bitsBytes(enums []model.EnumValue) int {
+	if len(enums) == 0 {
+		return 0
+	}
+	var maxBit int64
+	for _, e := range enums {
+		if e.Number > maxBit {
+			maxBit = e.Number
+		}
+	}
+	return int(maxBit/8) + 1
 }
