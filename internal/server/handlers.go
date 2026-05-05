@@ -1171,6 +1171,12 @@ func isIntegerSyntax(s string) bool {
 	}
 	switch t {
 	case "INTEGER", "Integer32",
+		// `Unsigned32` is an SMI base type (RFC 2578 §7.1.4) and
+		// the second-most-common single-column INDEX syntax in
+		// real-world MIB corpora — `alarmActiveIndex`,
+		// `vacmContextIndex`, etc. all use it. Smidump emits the
+		// literal token verbatim.
+		"Unsigned32",
 		"Enumeration",
 		"InterfaceIndex",
 		"InterfaceIndexOrZero",
