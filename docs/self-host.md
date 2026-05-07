@@ -39,12 +39,38 @@ resolvable on `$PATH`.
 
 ## Docker
 
-### Quickstart
+### Quickstart (no clone needed)
+
+The published image bundles the curated corpus (~322 standard
+IETF/IANA MIBs) at `/var/lib/blittermib/mibs`, so a bare
+`docker run` is enough to browse them:
+
+```bash
+docker run --rm -p 8080:8080 ghcr.io/no42-org/blittermib:latest
+```
+
+Open <http://localhost:8080>.
+
+### Layering custom MIBs on top
+
+Bind-mount a host directory at `/var/lib/blittermib/mibs/upload`.
+The watcher picks up `.mib` / `.txt` / `.my` files dropped there
+alongside the baked-in corpus:
+
+```bash
+mkdir -p ./my-mibs
+# drop your MIB files into ./my-mibs
+docker run --rm -p 8080:8080 \
+    -v "$PWD/my-mibs:/var/lib/blittermib/mibs/upload:ro" \
+    ghcr.io/no42-org/blittermib:latest
+```
+
+### With compose.yml
 
 ```bash
 git clone https://github.com/no42-org/blittermib.git
 cd blittermib
-mkdir mibs                              # drop your MIB files here
+mkdir -p mibs/upload                    # drop your MIB files here
 docker compose up -d
 ```
 
@@ -52,7 +78,9 @@ The shipped `compose.yml`:
 
 - Builds the image locally (or pulls `ghcr.io/no42-org/blittermib:latest`
   if available)
-- Mounts `./mibs/` (read-only) into `/var/lib/blittermib/mibs`
+- Mounts `./mibs/upload/` (read-only) into
+  `/var/lib/blittermib/mibs/upload` so user MIBs layer on top of the
+  baked-in corpus
 - Creates a named volume `blittermib-data` for the SQLite database
 - Exposes port 8080 on the host
 - Sets `stop_grace_period: 35s` so graceful shutdown completes (the

@@ -30,11 +30,34 @@ anything to a third party.
 
 ### Docker
 
+The published image ships the curated corpus (~322 standard IETF/IANA
+MIBs) baked in, so you can run it without cloning anything:
+
+```bash
+docker run --rm -p 8080:8080 ghcr.io/no42-org/blittermib:latest
+```
+
+To layer your own MIBs on top of the baked-in corpus, bind-mount a
+host directory at `/var/lib/blittermib/mibs/upload` — the watcher
+picks them up alongside the standard corpus:
+
+```bash
+mkdir -p ./my-mibs
+# drop your .mib / .txt / .my files into ./my-mibs
+docker run --rm -p 8080:8080 \
+    -v "$PWD/my-mibs:/var/lib/blittermib/mibs/upload:ro" \
+    ghcr.io/no42-org/blittermib:latest
+```
+
+Or with `compose.yml` (uses a named data volume for the SQLite DB and
+auto-restart on failure):
+
 ```bash
 git clone https://github.com/no42-org/blittermib.git
 cd blittermib
-# Drop your own MIBs into mibs/ (any depth — the loader walks recursively).
-# The repo ships an empty corpus skeleton; contributors PR new MIBs in.
+mkdir -p mibs/upload
+# drop your MIBs into mibs/upload/ — they'll be layered on top of
+# the corpus that ships in the image.
 docker compose up
 ```
 

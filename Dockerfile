@@ -65,6 +65,14 @@ WORKDIR /home/blittermib
 
 COPY --from=build /out/blittermib /usr/local/bin/blittermib
 
+# Ship the curated corpus (standard IETF / IANA MIBs + any vendor
+# MIBs the maintainer has merged into the repo) so `docker run`
+# without a volume mount works end-to-end. Operators who want to
+# layer their own MIBs on top can bind-mount over /var/lib/blittermib/mibs
+# (compose.yml does exactly that for the dev workflow), which masks
+# the baked-in corpus until the mount is removed.
+COPY --chown=blittermib:blittermib mibs/ /var/lib/blittermib/mibs/
+
 EXPOSE 8080
 
 # A user can override -mibs / -data / -listen on `docker run`.
