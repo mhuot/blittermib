@@ -1,0 +1,92 @@
+name: validate-mibs
+
+# Tiered validation per design.md Decision 6. Triggers only when a
+# PR touches `mibs/**` or this workflow file itself, so unrelated PRs
+# don't pay the libsmi setup cost.
+#
+# `fetch-depth: 0` is required so Tier 4 (diff-parse) can resolve
+# the PR's base SHA — `pull_request.base.sha` may be many commits
+# back on a long-lived branch, and a shallow clone will reject the
+# `git worktree add` against an unfetched commit.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'mibs/**'
+      - '.github/workflows/validate-mibs.yml'
+      - 'scripts/verify-mibs-*.sh'
+      - 'scripts/diff-parse.sh'
+      - 'scripts/lib-mib-walk.sh'
+
+permissions:
+  contents: read
+  # NOTE: §6.9 (sticky-comment for `unknown` licenses) needs
+  # `pull-requests: write` when it lands. Granted then; least
+  # privilege now.
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    # Bound the job — Tier 3 lacks a per-MIB timeout and a
+    # pathological smidump could hold a runner for the GHA 6 h
+    # default otherwise. Tier 4 has a per-file 180 s Python timeout.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v5.0.2
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install libsmi
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsmi2-tools
+
+      - name: Tier 1 — Lexical
+        run: make verify-mibs-lexical
+
+      - name: Tier 2 — Naming + structure
+        run: make verify-mibs-naming
+
+      - name: Tier 3 — Parser
+        run: make verify-mibs-parse
+
+      - name: Tier 4 — Diff-parse vs PR base
+        # Use the PR base SHA (stable across rebases / multi-commit
+        # PRs / merge strategies) rather than `HEAD~1` (which only
+        # happens to work for single-commit PRs).
+        run: |
+          set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          PR_SHA="$(git rev-parse HEAD)"
+          bash scripts/diff-parse.sh "$BASE_SHA" "$PR_SHA"
+
+      - name: INDEX.yaml drift check
+        # Re-run `make index` (which uses `go run ./cmd/mib-index`,
+        # hence the setup-go step above) and fail if the committed
+        # file differs from the regenerated one — forces contributors
+        # to run `make index` and commit the result before PR.
+        run: |
+          set -euo pipefail
+          if [ ! -f mibs/INDEX.yaml ]; then
+            echo "INDEX.yaml drift check skipped (mibs/INDEX.yaml does not exist yet)"
+            exit 0
+          fi
+          make index
+          if ! git diff --quiet -- mibs/INDEX.yaml; then
+            echo "INDEX.yaml is stale — run 'make index' locally and commit the diff" >&2
+            git --no-pager diff -- mibs/INDEX.yaml
+            exit 1
+          fi
+          echo "INDEX.yaml: in sync with corpus"
+
+      # NOTE: §6.9 (sticky-comment for `unknown` licenses) is not yet
+      # implemented in this v1.0 workflow. The mechanism — `gh pr
+      # comment --edit-last` keyed on a sentinel marker in the body —
+      # will land once the corpus has enough `unknown`-tagged entries
+      # for the comment to be useful.

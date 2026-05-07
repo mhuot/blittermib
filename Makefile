@@ -1,4 +1,4 @@
-.PHONY: all build test verify run tidy fmt vet lint clean help check-tools hooks prepare-assets generate fetch-standard-mibs fetch-fonts fetch-alpine refresh-pen index dist docker-build
+.PHONY: all build test verify run tidy fmt vet lint clean help check-tools hooks prepare-assets generate fetch-standard-mibs fetch-fonts fetch-alpine fetch-htmx refresh-pen index verify-mibs verify-mibs-lexical verify-mibs-naming verify-mibs-parse dist docker-build
 
 # Pinned templ version — keep in sync with go.mod's github.com/a-h/templ entry.
 TEMPL_VERSION := v0.3.1001
@@ -123,6 +123,21 @@ refresh-pen:
 index:
 	$(GO) run ./cmd/mib-index --root mibs --out mibs/INDEX.yaml --overrides mibs/_overrides.yaml
 
+# Tiered MIB-corpus validation per design.md Decision 6. CI runs all
+# three tiers on every PR touching `mibs/**`; local pre-flight before
+# pushing keeps PR cycles tight. Tier 4 (diff-parse) is CI-only — it
+# requires git worktrees against the parent commit.
+verify-mibs: verify-mibs-lexical verify-mibs-naming verify-mibs-parse
+
+verify-mibs-lexical:
+	@bash scripts/verify-mibs-lexical.sh
+
+verify-mibs-naming:
+	@bash scripts/verify-mibs-naming.sh
+
+verify-mibs-parse:
+	@bash scripts/verify-mibs-parse.sh
+
 check-tools:
 	@command -v smidump >/dev/null 2>&1 || { echo "smidump not found. Install libsmi >= $(LIBSMI_MIN) (brew install libsmi)"; exit 1; }
 	@command -v smilint >/dev/null 2>&1 || { echo "smilint not found. Install libsmi >= $(LIBSMI_MIN) (brew install libsmi)"; exit 1; }
@@ -195,6 +210,7 @@ help:
 	@echo "make dist        cross-build release archives into dist/"
 	@echo "make docker-build build the production Docker image (TAG=...)"
 	@echo "make fetch-htmx  re-vendor htmx.min.js"
-	@echo "make fetch-standard-mibs  populate the embedded standard MIB bundle"
 	@echo "make refresh-pen refresh the IANA PEN registry snapshot"
 	@echo "make index       regenerate mibs/INDEX.yaml from the corpus"
+	@echo "make verify-mibs run the local MIB-corpus checks (lexical + naming + parse)"
+	@echo "make fetch-standard-mibs  populate the embedded standard MIB bundle"
