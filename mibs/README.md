@@ -53,5 +53,7 @@ the date churn in the PR.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow,
-the four-tier CI expectations, and how to debug each.
+- [HOWTO-ADD-A-MIB.md](HOWTO-ADD-A-MIB.md) — 8-step walkthrough for
+  contributors adding their first MIB.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — reference matter: license-tag
+  rules, override semantics, full CI tier description.

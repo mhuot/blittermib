@@ -1,5 +1,11 @@
 # Contributing to the MIB Corpus
 
+> **First time? Start with [HOWTO-ADD-A-MIB.md](HOWTO-ADD-A-MIB.md)** —
+> a concrete 8-step walkthrough with example commands, prerequisites,
+> and a "common gotchas" table. This document is the reference matter
+> behind it: license-tag rules, override semantics, the canonical CI
+> tier description.
+
 Adding a MIB takes four steps:
 
 1. **Place the file in the correct directory.**
