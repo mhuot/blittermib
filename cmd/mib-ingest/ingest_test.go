@@ -210,6 +210,63 @@ func TestPrintSummaryGitAddFailures(t *testing.T) {
 	}
 }
 
+// TestPrintSummaryLeftoverListing asserts the summary lists every
+// file still sitting in upload/ (non-MIB skipped, parse errors,
+// refused) so the operator can see what to act on.
+func TestPrintSummaryLeftoverListing(t *testing.T) {
+	var buf bytes.Buffer
+	moves := []result{
+		{outcome: outcomeMoved, conf: mibcorpus.ConfidenceHigh},
+		{outcome: outcomeSkippedNonMIB, src: "mibs/upload/README.txt", reason: "no MIB marker"},
+		{outcome: outcomeParseError, src: "mibs/upload/BROKEN-MIB", reason: "smidump rejected module"},
+		{outcome: outcomeRefused, src: "mibs/upload/CISCO-FOO-MIB", reason: "destination already exists: mibs/vendors/9-cisco/CISCO-FOO-MIB"},
+	}
+	printSummary(&buf, moves, 1, 1, 1, 1, 0)
+	got := buf.String()
+	for _, want := range []string{
+		"left in upload/:",
+		"[non-mib    ] mibs/upload/README.txt",
+		"[parse-error] mibs/upload/BROKEN-MIB",
+		"[refuse     ] mibs/upload/CISCO-FOO-MIB",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+// TestPrintSummaryLeftoverTruncated asserts the per-file list is
+// bounded so a vendor archive with hundreds of READMEs doesn't
+// drown the terminal.
+func TestPrintSummaryLeftoverTruncated(t *testing.T) {
+	var buf bytes.Buffer
+	var moves []result
+	for i := 0; i < summaryListMax+5; i++ {
+		moves = append(moves, result{
+			outcome: outcomeSkippedNonMIB,
+			src:     "mibs/upload/junk",
+			reason:  "no MIB marker",
+		})
+	}
+	printSummary(&buf, moves, 0, 0, len(moves), 0, 0)
+	got := buf.String()
+	if !strings.Contains(got, "...and 5 more") {
+		t.Errorf("summary missing truncation hint; got:\n%s", got)
+	}
+}
+
+// TestPrintSummaryNoLeftover asserts the trailing block is omitted
+// when nothing is left in upload/ — a clean run prints just the
+// summary line.
+func TestPrintSummaryNoLeftover(t *testing.T) {
+	var buf bytes.Buffer
+	moves := []result{{outcome: outcomeMoved, conf: mibcorpus.ConfidenceHigh}}
+	printSummary(&buf, moves, 1, 0, 0, 0, 0)
+	if strings.Contains(buf.String(), "left in upload") {
+		t.Errorf("clean run should not print 'left in upload' block; got:\n%s", buf.String())
+	}
+}
+
 // TestIngestDryRun asserts --dry-run touches no files. Drops a
 // no-marker file in upload (which the lexical-marker gate handles
 // without libsmi), runs ingest with --dry-run, and verifies the

@@ -18,6 +18,9 @@ func TestHasMIBOpener(t *testing.T) {
 	}{
 		{"with-marker", "FOO-MIB DEFINITIONS ::= BEGIN\nEND\n", true},
 		{"with-leading-comments", "-- header\n-- more header\nFOO DEFINITIONS ::= BEGIN\n", true},
+		{"multi-space-between-tokens", "APPC-MIB DEFINITIONS        ::= BEGIN\nEND\n", true},
+		{"tab-between-tokens", "APPC-MIB DEFINITIONS\t::=\tBEGIN\nEND\n", true},
+		{"newline-between-tokens", "APPC-MIB DEFINITIONS\n::=\nBEGIN\nEND\n", true},
 		{"no-marker", "Copyright (c) 2024 ...\nNot a MIB at all.\n", false},
 		{"empty", "", false},
 	}
@@ -48,7 +51,7 @@ func TestHasMIBOpenerStraddlesBoundary(t *testing.T) {
 	// last 2 bytes of the 32 KB block + the rest in the overlap
 	// region). Without the overlap read, this would be missed.
 	prefixLen := sniffBytes - 2
-	body := strings.Repeat("-", prefixLen) + string(DefinitionsBeginMarker) + "\n"
+	body := strings.Repeat("-", prefixLen) + "DEFINITIONS ::= BEGIN" + "\n"
 	path := filepath.Join(dir, "STRADDLE-MIB")
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)

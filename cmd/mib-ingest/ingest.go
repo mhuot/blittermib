@@ -421,6 +421,13 @@ func printDryRun(w io.Writer, moves []result) {
 	fmt.Fprintln(w, "(dry-run; no files moved, no INDEX.yaml regen)")
 }
 
+// summaryListMax bounds the per-file list of leftover files printed
+// after the summary line. A vendor archive can drop hundreds of
+// READMEs / Makefiles into upload/; truncating at 20 keeps the
+// terminal usable while still answering the common "what are the
+// 5 files still sitting in upload?" question for a small drop.
+const summaryListMax = 20
+
 func printSummary(w io.Writer, moves []result, moved, refused, skippedNonMIB, parseErrors, gitAddFailures int) {
 	var routedUnsorted int
 	for _, r := range moves {
@@ -439,4 +446,36 @@ func printSummary(w io.Writer, moves []result, moved, refused, skippedNonMIB, pa
 		fmt.Fprintf(w, ", %d git-add failures", gitAddFailures)
 	}
 	fmt.Fprintln(w)
+
+	// Final per-file rundown of anything still sitting in upload/.
+	// This is exactly the set the operator needs to act on (delete,
+	// re-classify, or fix the source MIB).
+	var leftover []result
+	for _, r := range moves {
+		switch r.outcome {
+		case outcomeSkippedNonMIB, outcomeParseError, outcomeRefused:
+			leftover = append(leftover, r)
+		}
+	}
+	if len(leftover) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "left in upload/:")
+	for i, r := range leftover {
+		if i == summaryListMax {
+			fmt.Fprintf(w, "  ...and %d more (use --dry-run to see the full list)\n",
+				len(leftover)-summaryListMax)
+			break
+		}
+		var tag string
+		switch r.outcome {
+		case outcomeSkippedNonMIB:
+			tag = "non-mib"
+		case outcomeParseError:
+			tag = "parse-error"
+		case outcomeRefused:
+			tag = "refuse"
+		}
+		fmt.Fprintf(w, "  [%-11s] %s — %s\n", tag, r.src, r.reason)
+	}
 }
