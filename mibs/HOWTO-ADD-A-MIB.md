@@ -98,19 +98,18 @@ mv mibs/upload/CISCO-RTTMON-MIB.mib mibs/vendors/9-cisco/CISCO-RTTMON-MIB
 
 Then run `make index` to update the catalog.
 
-## 4. Regenerate the metadata index
+## 4. Verify the INDEX.yaml entry
 
-```bash
-make index
-```
-
-This rewrites `mibs/INDEX.yaml`. Open the diff and verify two things:
+`make ingest` already ran `make index` for you, so `mibs/INDEX.yaml`
+is up-to-date. (For files you placed manually via step 3, run
+`make index` yourself before continuing.) Open the diff and verify
+two things:
 
 1. **`license:`** matches the actual copyright owner. The auto-detector
    reads the first 200 lines and matches 11 starter patterns.
    `Copyright (c) <year> Cisco Systems` → `license: cisco`. No match →
    `license: unknown`.
-2. **`pen:` and `vendor:`** match the directory you placed the file in.
+2. **`pen:` and `vendor:`** match the directory the file landed in.
    `vendors/9-cisco/...` → `pen: 9` / `vendor: cisco`.
 
 ## 5. Fix the license tag if needed

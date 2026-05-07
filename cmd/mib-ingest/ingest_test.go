@@ -13,7 +13,9 @@ import (
 
 // TestWalkUploadFiltersNonMIBs covers the upload-folder gate: hidden
 // files (.gitkeep), wrong extensions, and files lacking the MIB
-// marker stay out of the result set.
+// marker stay out of the result set's downstream pipeline. (walkUpload
+// itself returns extension-matching files; the marker filter happens
+// later in classifyFiles.)
 func TestWalkUploadFiltersNonMIBs(t *testing.T) {
 	dir := t.TempDir()
 	mib := func(name string) string { return name + " DEFINITIONS ::= BEGIN\nEND\n" }
@@ -35,50 +37,16 @@ func TestWalkUploadFiltersNonMIBs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// walkUpload returns ALL extension-matching files; the marker
-	// filter happens later in classifyFiles. Verify the extension
-	// filter rejected README.md and the marker check will reject
-	// GARBAGE.mib downstream.
 	wantSuffixes := []string{"CISCO-FOO-MIB.mib", "EXTLESS-MIB", "GARBAGE.mib"}
 	if len(got) != len(wantSuffixes) {
 		t.Errorf("walkUpload returned %d files, want %d: %v", len(got), len(wantSuffixes), got)
 	}
 }
 
-// TestHasMIBOpener verifies the marker-sniff gate catches typical
-// non-MIB files (LICENSE, README) and accepts a real opener.
-func TestHasMIBOpener(t *testing.T) {
-	dir := t.TempDir()
-	cases := []struct {
-		name, body string
-		want       bool
-	}{
-		{"with-marker", "FOO-MIB DEFINITIONS ::= BEGIN\nEND\n", true},
-		{"with-leading-comments", "-- header\nFOO DEFINITIONS ::= BEGIN\n", true},
-		{"no-marker", "Copyright 2024 ACME\n", false},
-		{"empty", "", false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			path := filepath.Join(dir, c.name)
-			if err := os.WriteFile(path, []byte(c.body), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			got, err := hasMIBOpener(path)
-			if err != nil {
-				t.Fatalf("hasMIBOpener: %v", err)
-			}
-			if got != c.want {
-				t.Errorf("hasMIBOpener(%q) = %v, want %v", c.name, got, c.want)
-			}
-		})
-	}
-}
-
 // TestPlanMovesRoutesByConfidence exercises the destination-routing
 // rules without invoking libsmi: classifyFiles output is synthesised
-// directly. Keeps the test pure-Go (CI doesn't need libsmi for this
-// branch) AND keeps the assertion focused on planMoves' behaviour.
+// directly. Keeps the test pure-Go AND keeps the assertion focused
+// on planMoves' behaviour.
 func TestPlanMovesRoutesByConfidence(t *testing.T) {
 	root := t.TempDir()
 	results := []result{
@@ -134,6 +102,8 @@ func TestPlanMovesRefusesOnExistingDst(t *testing.T) {
 // TestApplyMovesRenames seeds a real upload file + result slice and
 // asserts the os.Rename happens for high-confidence rows. Uses
 // synthesised result slices so it stays libsmi-free.
+//
+// Note: r.dst is REPO-RELATIVE — applyMoves joins with root.
 func TestApplyMovesRenames(t *testing.T) {
 	root := t.TempDir()
 	upload := filepath.Join(root, "mibs/upload")
@@ -144,25 +114,23 @@ func TestApplyMovesRenames(t *testing.T) {
 	if err := os.WriteFile(srcPath, []byte("CISCO-FOO-MIB DEFINITIONS ::= BEGIN\nEND\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dstAbs := filepath.Join(root, "mibs/vendors/9-cisco/CISCO-FOO-MIB")
+	dstRel := "mibs/vendors/9-cisco/CISCO-FOO-MIB"
 	moves := []result{
 		{
 			src:     srcPath,
-			dst:     dstAbs,
+			dst:     dstRel,
 			outcome: outcomeMoved,
 			conf:    mibcorpus.ConfidenceHigh,
 		},
 	}
-	moved, refusedAtMove, err := applyMoves(moves, root, false)
+	moved, refusedAtMove, gitFails, err := applyMoves(moves, root, false)
 	if err != nil {
 		t.Fatalf("applyMoves: %v", err)
 	}
-	if moved != 1 {
-		t.Errorf("moved = %d, want 1", moved)
+	if moved != 1 || refusedAtMove != 0 || gitFails != 0 {
+		t.Errorf("moved=%d refused=%d gitFails=%d", moved, refusedAtMove, gitFails)
 	}
-	if refusedAtMove != 0 {
-		t.Errorf("refusedAtMove = %d, want 0", refusedAtMove)
-	}
+	dstAbs := filepath.Join(root, dstRel)
 	if _, err := os.Stat(dstAbs); err != nil {
 		t.Errorf("destination not created: %v", err)
 	}
@@ -172,8 +140,7 @@ func TestApplyMovesRenames(t *testing.T) {
 }
 
 // TestApplyMovesGitAdd checks that the --git-add path actually runs
-// git add. Skipped when git is not on PATH or this isn't run inside
-// a git work tree.
+// git add. Skipped when git isn't on PATH.
 func TestApplyMovesGitAdd(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -190,19 +157,18 @@ func TestApplyMovesGitAdd(t *testing.T) {
 	if err := os.WriteFile(srcPath, []byte("body\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dstAbs := filepath.Join(root, "mibs/vendors/9-cisco/CISCO-FOO-MIB")
+	dstRel := "mibs/vendors/9-cisco/CISCO-FOO-MIB"
 	moves := []result{
-		{src: srcPath, dst: dstAbs, outcome: outcomeMoved, conf: mibcorpus.ConfidenceHigh},
+		{src: srcPath, dst: dstRel, outcome: outcomeMoved, conf: mibcorpus.ConfidenceHigh},
 	}
-	moved, refusedAtMove, err := applyMoves(moves, root, true)
+	moved, refusedAtMove, gitFails, err := applyMoves(moves, root, true)
 	if err != nil {
 		t.Fatalf("applyMoves: %v", err)
 	}
-	if moved != 1 || refusedAtMove != 0 {
-		t.Fatalf("moved=%d refused=%d", moved, refusedAtMove)
+	if moved != 1 || refusedAtMove != 0 || gitFails != 0 {
+		t.Fatalf("moved=%d refused=%d gitFails=%d", moved, refusedAtMove, gitFails)
 	}
-	// Confirm git status shows the file as added (A in index).
-	out, err := exec.Command("git", "-C", root, "status", "--short", dstAbs).Output()
+	out, err := exec.Command("git", "-C", root, "status", "--short", filepath.Join(root, dstRel)).Output()
 	if err != nil {
 		t.Fatalf("git status: %v", err)
 	}
@@ -219,11 +185,82 @@ func TestPrintSummary(t *testing.T) {
 		{outcome: outcomeMoved, conf: mibcorpus.ConfidenceMedium},
 		{outcome: outcomeRoutedUnsorted, conf: mibcorpus.ConfidenceLow},
 	}
-	printSummary(&buf, moves, 3, 0, 0)
+	printSummary(&buf, moves, 3, 0, 0, 0)
 	got := buf.String()
 	for _, want := range []string{"3 moved", "2 high/medium", "1 low → unsorted"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary missing %q; got: %q", want, got)
 		}
+	}
+}
+
+// TestPrintSummaryGitAddFailures asserts the summary surfaces the
+// `git add` failure count when --git-add was set and one or more
+// `git add` invocations failed.
+func TestPrintSummaryGitAddFailures(t *testing.T) {
+	var buf bytes.Buffer
+	moves := []result{{outcome: outcomeMoved, conf: mibcorpus.ConfidenceHigh}}
+	printSummary(&buf, moves, 1, 0, 0, 2)
+	if !strings.Contains(buf.String(), "2 git-add failures") {
+		t.Errorf("summary missing git-add failures count; got %q", buf.String())
+	}
+}
+
+// TestIngestDryRun asserts --dry-run touches no files. Drops a
+// no-marker file in upload (which the lexical-marker gate handles
+// without libsmi), runs ingest with --dry-run, and verifies the
+// file is still there. Independently tests that --no-index doesn't
+// regen INDEX.yaml.
+func TestIngestDryRun(t *testing.T) {
+	root := t.TempDir()
+	upload := filepath.Join(root, "mibs/upload")
+	if err := os.MkdirAll(upload, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(upload, "GARBAGE.mib")
+	if err := os.WriteFile(src, []byte("not a mib\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ingestCmd([]string{
+		"--src", upload,
+		"--root", root,
+		"--dry-run",
+	}); err != nil {
+		t.Fatalf("ingestCmd dry-run: %v", err)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Errorf("source file disappeared during dry-run: %v", err)
+	}
+}
+
+// TestIngestExitCode asserts the binary returns nil on a clean
+// ingest (empty upload) and non-nil when a file is left in upload
+// (failed marker check).
+func TestIngestExitCode(t *testing.T) {
+	root := t.TempDir()
+	upload := filepath.Join(root, "mibs/upload")
+	if err := os.MkdirAll(upload, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty upload — clean exit.
+	if err := ingestCmd([]string{
+		"--src", upload,
+		"--root", root,
+		"--no-index",
+	}); err != nil {
+		t.Errorf("empty upload: got error %v, want nil", err)
+	}
+
+	// Drop a non-MIB file → left in upload → non-zero exit.
+	if err := os.WriteFile(filepath.Join(upload, "GARBAGE.mib"), []byte("not a mib\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ingestCmd([]string{
+		"--src", upload,
+		"--root", root,
+		"--no-index",
+	}); err == nil {
+		t.Error("garbage file: got nil, want error (file left in upload)")
 	}
 }

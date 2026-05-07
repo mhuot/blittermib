@@ -1,29 +1,20 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/csv"
 	"flag"
 	"fmt"
-	"io"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/no42-org/blittermib/internal/compile"
+	"github.com/no42-org/blittermib/internal/mibcorpus"
 )
-
-// definitionsBeginMarker is the lexical anchor every SMIv2 module
-// must contain. The walk gates on this so non-MIB files that share
-// an extension or are extensionless (LICENSE, README, the corpus's
-// own `_groups.yaml`/`_overrides.yaml` aren't MIB-extensioned but
-// LICENSES/*.txt is) get filtered before being passed to libsmi.
-var definitionsBeginMarker = []byte("DEFINITIONS ::= BEGIN")
 
 type planEntry struct {
 	SrcPath    string
@@ -33,11 +24,10 @@ type planEntry struct {
 	Confidence Confidence
 }
 
-// validModuleName is the conservative character set we accept in a
-// MODULE-IDENTITY name when synthesising a destination path. It
-// rejects path separators, `..`, and other shell-active characters
-// so an adversarial MIB can't produce a path-traversing dst.
-var validModuleName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+// validModuleName is re-exported from internal/mibcorpus to avoid
+// the duplicate-regex drift surface (same gate ships in mib-ingest
+// and the loader). See `mibcorpus.ValidModuleName` for the rule.
+var validModuleName = mibcorpus.ValidModuleName
 
 // planCmd implements `blittermib-migrate plan`.
 func planCmd(args []string) error {
@@ -212,7 +202,7 @@ func walkSource(dir string) ([]string, error) {
 		default:
 			return nil
 		}
-		ok, err := hasMIBOpener(path)
+		ok, err := mibcorpus.HasMIBOpener(path)
 		if err != nil {
 			slog.Warn("read failed; skipping", "path", path, "err", err)
 			return nil
@@ -224,31 +214,6 @@ func walkSource(dir string) ([]string, error) {
 		return nil
 	})
 	return out, err
-}
-
-// hasMIBOpener returns true when the first 32 KB of the file
-// contains the `DEFINITIONS ::= BEGIN` marker. Mirrors the loader's
-// bounded-read sniff (cmd/blittermib/loader.go), including the
-// `sniffBytes + len(marker)-1` overlap that catches a marker
-// straddling the byte-N boundary. An empty file or any short-read
-// EOF flavour reports "no marker" without raising the EOF — those
-// are non-MIBs, not I/O errors.
-func hasMIBOpener(path string) (bool, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-	const sniffBytes = 32 * 1024
-	buf := make([]byte, sniffBytes+len(definitionsBeginMarker)-1)
-	n, err := io.ReadFull(f, buf)
-	if err == io.EOF || err == io.ErrUnexpectedEOF {
-		return bytes.Contains(buf[:n], definitionsBeginMarker), nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return bytes.Contains(buf[:n], definitionsBeginMarker), nil
 }
 
 func summarize(entries []planEntry, dupCount int, w *os.File) {

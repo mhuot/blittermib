@@ -9,11 +9,19 @@ package mibcorpus
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/no42-org/blittermib/internal/iana"
 )
+
+// ValidModuleName matches the conservative character set we accept
+// for a MODULE-IDENTITY name when synthesising a destination
+// filename. Rejects path separators, `..`, and shell-active
+// characters so an adversarial MIB can't produce a path-traversing
+// destination via its module name.
+var ValidModuleName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // Confidence labels each classification entry; low-confidence rows are
 // routed to mibs/unsorted/ for the maintainer to re-classify by hand.

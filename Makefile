@@ -223,4 +223,5 @@ help:
 	@echo "make index       regenerate mibs/INDEX.yaml from the corpus"
 	@echo "make verify-mibs run the local MIB-corpus checks (lexical + naming + parse)"
 	@echo "make ingest      classify and route MIBs in mibs/upload/ into the corpus"
+	@echo "                 (flags: 'go run ./cmd/mib-ingest --dry-run|--git-add|--no-index')"
 	@echo "make fetch-standard-mibs  populate the embedded standard MIB bundle"

@@ -1,27 +1,18 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"io"
 	"io/fs"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/no42-org/blittermib/internal/compile"
+	"github.com/no42-org/blittermib/internal/mibcorpus"
 	"github.com/no42-org/blittermib/internal/model"
 	"github.com/no42-org/blittermib/internal/store"
 )
-
-// definitionsBeginMarker is the lexical anchor every SMIv2 module
-// must contain. Used as a runtime gate to exclude non-MIB files
-// (LICENSE, README, vendor docs) that share an extension or are
-// extensionless. The first ~8 KB of a file always contains the
-// opener if the file is a valid module.
-var definitionsBeginMarker = []byte("DEFINITIONS ::= BEGIN")
 
 // loader coordinates the compile pipeline and the store: walk the
 // MIB directory, parse each file, build cross-references, and replace
@@ -183,7 +174,7 @@ func walkMIBFiles(dir string) ([]string, error) {
 		default:
 			return nil
 		}
-		ok, err := hasMIBOpener(path)
+		ok, err := mibcorpus.HasMIBOpener(path)
 		if err != nil {
 			slog.Warn("read failed; skipping", "path", path, "err", err)
 			return nil
@@ -195,39 +186,4 @@ func walkMIBFiles(dir string) ([]string, error) {
 		return nil
 	})
 	return out, err
-}
-
-// hasMIBOpener returns true when the first 32 KB of the file
-// contains the `DEFINITIONS ::= BEGIN` marker. The 32 KB cap
-// comfortably accommodates real-world Cisco/Juniper headers (which
-// can run several KB of copyright/IPR boilerplate before the
-// opener) while still keeping the per-file cost cheap on a
-// multi-thousand-MIB corpus walk.
-//
-// Reads `sniffBytes + len(marker)-1` to defend against the marker
-// straddling the byte-N boundary — without the overlap we'd miss
-// a marker that spans bytes 32766..32786.
-//
-// Uses `io.ReadFull` to defend against legal short-read behaviour
-// from `os.File.Read` on regular files — a partial read still
-// gives us bytes to scan. An empty file or any short-read EOF
-// flavour is reported as "no marker" without surfacing the EOF
-// itself; those are non-MIBs, not I/O errors.
-func hasMIBOpener(path string) (bool, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-	const sniffBytes = 32 * 1024
-	buf := make([]byte, sniffBytes+len(definitionsBeginMarker)-1)
-	n, err := io.ReadFull(f, buf)
-	if err == io.EOF || err == io.ErrUnexpectedEOF {
-		// File shorter than the buffer — scan whatever we got.
-		return bytes.Contains(buf[:n], definitionsBeginMarker), nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return bytes.Contains(buf[:n], definitionsBeginMarker), nil
 }

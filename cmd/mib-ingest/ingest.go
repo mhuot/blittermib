@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -11,38 +10,32 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/no42-org/blittermib/internal/compile"
 	"github.com/no42-org/blittermib/internal/mibcorpus"
 )
 
-// definitionsBeginMarker mirrors the loader's lexical-marker gate so
-// non-MIB files in the upload directory (LICENSE, README, partial
-// downloads) are skipped without an expensive libsmi parse.
-var definitionsBeginMarker = []byte("DEFINITIONS ::= BEGIN")
-
-// validModuleName is the conservative character set we accept for a
-// MODULE-IDENTITY name when synthesising a destination filename. Same
-// rule the migrate tool uses — rejects path separators / `..` / shell-
-// active characters.
-var validModuleName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-
 // outcome encodes what happened to a single upload-folder file.
+//
+// outcomeUnknown is the zero value so a `result{}` literal that
+// forgets to set the field doesn't accidentally classify as
+// "moved" — defensive default flagged in the post-merge review.
 type outcome int
 
 const (
-	outcomeMoved          outcome = iota // moved to canonical destination
-	outcomeRoutedUnsorted                // low confidence → mibs/unsorted/
-	outcomeRefused                       // destination already exists
-	outcomeLeftInUpload                  // parse failed / no marker / etc.
+	outcomeUnknown        outcome = iota
+	outcomeMoved                  // moved to canonical destination
+	outcomeRoutedUnsorted         // low confidence → mibs/unsorted/
+	outcomeRefused                // destination already exists
+	outcomeLeftInUpload           // parse failed / no marker / etc.
 )
 
 type result struct {
 	src     string
-	dst     string
+	dst     string // repo-relative path under <root>; e.g. "mibs/vendors/9-cisco/CISCO-FOO-MIB"
 	outcome outcome
 	conf    mibcorpus.Confidence
 	reason  string
@@ -68,14 +61,13 @@ func ingestCmd(args []string) error {
 		return fmt.Errorf("--src must be a directory, got %s", *src)
 	}
 
+	// Resolve the groups path under --root. No silent fallback — a
+	// malformed YAML at the root-relative path used to get retried
+	// at the bare path, masking the real error. If you need a
+	// different path, pass `--groups <path>`.
 	groups, err := mibcorpus.LoadGroups(filepath.Join(*root, *groupsPath))
 	if err != nil {
-		// Try the path as given (in case --root is "." and groupsPath
-		// is already relative to caller's cwd).
-		groups, err = mibcorpus.LoadGroups(*groupsPath)
-		if err != nil {
-			return fmt.Errorf("load groups: %w", err)
-		}
+		return fmt.Errorf("load groups: %w", err)
 	}
 
 	files, err := walkUpload(*src)
@@ -87,20 +79,18 @@ func ingestCmd(args []string) error {
 		return nil
 	}
 
-	results, parseErrors := classifyFiles(*smidump, *smilint, *src, files, groups)
+	results, parseErrors := classifyFiles(*smidump, *smilint, *src, *root, files, groups)
 	results = append(results, parseErrors...)
 	moves, refusedCount, leftCount := planMoves(results, *root)
 
 	if *dryRun {
-		printDryRun(os.Stdout, moves, refusedCount, leftCount)
+		printDryRun(os.Stdout, moves)
 		return nil
 	}
 
-	movedCount, refusedAtMove, err := applyMoves(moves, *root, *gitAdd)
+	movedCount, refusedAtMove, gitAddFailures, err := applyMoves(moves, *root, *gitAdd)
 	if err != nil {
-		// Even on partial failure, surface the summary before
-		// returning.
-		printSummary(os.Stdout, moves, movedCount, refusedCount+refusedAtMove, leftCount)
+		printSummary(os.Stdout, moves, movedCount, refusedCount+refusedAtMove, leftCount, gitAddFailures)
 		return err
 	}
 
@@ -111,22 +101,23 @@ func ingestCmd(args []string) error {
 		}
 	}
 
-	printSummary(os.Stdout, moves, movedCount, refusedCount+refusedAtMove, leftCount)
+	printSummary(os.Stdout, moves, movedCount, refusedCount+refusedAtMove, leftCount, gitAddFailures)
 
 	totalRefused := refusedCount + refusedAtMove
-	if totalRefused > 0 || leftCount > 0 {
+	if totalRefused > 0 || leftCount > 0 || gitAddFailures > 0 {
 		// Non-zero exit if anything didn't make it through cleanly,
 		// so CI / scripted runs detect partial-success.
-		return fmt.Errorf("%d refused, %d left in upload", totalRefused, leftCount)
+		return fmt.Errorf("%d refused, %d left in upload, %d git-add failures",
+			totalRefused, leftCount, gitAddFailures)
 	}
 	return nil
 }
 
-// walkUpload returns the MIB-shaped files in dir (single level — the
-// drop folder isn't expected to be nested). Filename heuristics:
-// `.mib`, `.txt`, `.my`, or no extension. Hidden files and the
-// `.gitkeep` placeholder are skipped, as are symlinks and irregular
-// file types.
+// walkUpload returns the MIB-shaped files in dir (single level —
+// the drop folder isn't expected to be nested). Filename
+// heuristics: `.mib`, `.txt`, `.my`, or no extension. Hidden files
+// and the `.gitkeep` placeholder are skipped, as are symlinks and
+// irregular file types.
 func walkUpload(dir string) ([]string, error) {
 	var out []string
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -162,14 +153,15 @@ func walkUpload(dir string) ([]string, error) {
 
 // classifyFiles runs the lexical-marker check + libsmi parse +
 // mibcorpus.Classify pipeline for every input file. Files that fail
-// the marker check or libsmi parse are returned as parseErrors with
-// outcome=outcomeLeftInUpload.
-func classifyFiles(smidumpPath, smilintPath, srcDir string, files []string, groups mibcorpus.GroupMap) (parsed []result, parseErrors []result) {
+// the marker check or libsmi parse are returned as parseErrors
+// with outcome=outcomeLeftInUpload. Compile is bounded by a
+// per-batch timeout so a hung smidump can't hang the ingest forever.
+func classifyFiles(smidumpPath, smilintPath, srcDir, root string, files []string, groups mibcorpus.GroupMap) (parsed []result, parseErrors []result) {
 	// Filter to only files that pass the lexical-marker check —
 	// avoids feeding LICENSE / README / partial downloads to libsmi.
 	var keep []string
 	for _, f := range files {
-		ok, err := hasMIBOpener(f)
+		ok, err := mibcorpus.HasMIBOpener(f)
 		if err != nil {
 			parseErrors = append(parseErrors, result{
 				src:     f,
@@ -199,10 +191,15 @@ func classifyFiles(smidumpPath, smilintPath, srcDir string, files []string, grou
 	if smilintPath != "" {
 		c.Smilint = &compile.Smilint{Path: smilintPath, Paths: []string{srcDir}}
 	}
-	results := c.Compile(context.Background(), keep)
+
+	// Bound the compile pipeline — a pathological MIB or hung
+	// smidump shouldn't hang ingest indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	results := c.Compile(ctx, keep)
 
 	for _, r := range results {
-		if r.Err != nil || r.Module == nil || r.Module.Name == "" || r.Module.OIDRoot == "" {
+		if r.Err != nil || r.Module == nil || r.Module.Name == "" || strings.TrimSpace(r.Module.OIDRoot) == "" {
 			parseErrors = append(parseErrors, result{
 				src:     r.Target,
 				outcome: outcomeLeftInUpload,
@@ -210,7 +207,7 @@ func classifyFiles(smidumpPath, smilintPath, srcDir string, files []string, grou
 			})
 			continue
 		}
-		if !validModuleName.MatchString(r.Module.Name) {
+		if !mibcorpus.ValidModuleName.MatchString(r.Module.Name) {
 			parseErrors = append(parseErrors, result{
 				src:     r.Target,
 				outcome: outcomeLeftInUpload,
@@ -219,12 +216,31 @@ func classifyFiles(smidumpPath, smilintPath, srcDir string, files []string, grou
 			continue
 		}
 		cls := mibcorpus.Classify(r.Module.OIDRoot, r.Module.Name, groups, nil)
+		dst, err := classificationToDst(cls, r.Module.Name, r.Target)
+		if err != nil {
+			parseErrors = append(parseErrors, result{
+				src:     r.Target,
+				outcome: outcomeLeftInUpload,
+				reason:  err.Error(),
+			})
+			continue
+		}
+		// Per-file warning for medium-confidence routes — the
+		// PEN isn't in the curated registry. Operator should
+		// either confirm `vendors/{PEN}-unknown/` is OK or pin
+		// a slug via `make refresh-pen` + an explicit override.
+		if cls.Confidence == mibcorpus.ConfidenceMedium {
+			fmt.Fprintf(os.Stderr,
+				"[medium] %s → %s (PEN %d not in curated registry)\n",
+				r.Target, dst, cls.PEN)
+		}
 		parsed = append(parsed, result{
 			src:  r.Target,
 			conf: cls.Confidence,
-			dst:  classificationToDst(cls, r.Module.Name, r.Target),
+			dst:  dst,
 		})
 	}
+	_ = root // kept on the signature for future containment checks
 	return parsed, parseErrors
 }
 
@@ -241,26 +257,38 @@ func parseFailReason(r compile.Result) string {
 	return "smidump produced incomplete module (no MODULE-IDENTITY OID)"
 }
 
-// classificationToDst returns the destination relpath under <root>
+// classificationToDst returns the repo-relative destination path
 // for a given Classification.
 //
 //   - High / medium → mibs/<DstDir>/<MODULE-NAME> (extension stripped).
 //   - Low           → mibs/unsorted/<original-filename>.
-func classificationToDst(cls mibcorpus.Classification, moduleName, srcPath string) string {
+//
+// Defense-in-depth: rejects any destination that escapes
+// `<root>/mibs/` via `..` or absolute path. Today
+// `iana.Slug` and `ValidModuleName` make traversal impossible by
+// construction, but the gate closes the surface entirely.
+func classificationToDst(cls mibcorpus.Classification, moduleName, srcPath string) (string, error) {
+	var dst string
 	if cls.Confidence == mibcorpus.ConfidenceLow {
-		return filepath.Join("mibs", "unsorted", filepath.Base(srcPath))
+		dst = filepath.Join("mibs", "unsorted", filepath.Base(srcPath))
+	} else {
+		dst = filepath.Join("mibs", cls.DstDir, moduleName)
 	}
-	return filepath.Join("mibs", cls.DstDir, moduleName)
+	if !filepath.IsLocal(dst) {
+		return "", fmt.Errorf("computed destination escapes corpus root: %s", dst)
+	}
+	return dst, nil
 }
 
-// planMoves transforms the classifyFiles output into a list of moves
-// (with destination conflicts pre-checked against the existing corpus
-// state on disk). Returns the move list, count of refusals, count of
-// left-in-upload entries.
+// planMoves transforms the classifyFiles output into a list of
+// moves (with destination conflicts pre-checked against the
+// existing corpus state on disk). Returns the move list, count of
+// refusals, count of left-in-upload entries.
 func planMoves(results []result, root string) (moves []result, refusedCount int, leftInUploadCount int) {
 	for _, r := range results {
 		if r.outcome == outcomeLeftInUpload {
 			leftInUploadCount++
+			fmt.Fprintf(os.Stderr, "[skip] %s — %s\n", r.src, r.reason)
 			moves = append(moves, r)
 			continue
 		}
@@ -275,6 +303,7 @@ func planMoves(results []result, root string) (moves []result, refusedCount int,
 		if _, err := os.Lstat(fullDst); err == nil {
 			r.outcome = outcomeRefused
 			r.reason = fmt.Sprintf("destination already exists: %s", r.dst)
+			fmt.Fprintf(os.Stderr, "[refuse] %s → %s (%s)\n", r.src, r.dst, r.reason)
 			refusedCount++
 		}
 		moves = append(moves, r)
@@ -282,55 +311,63 @@ func planMoves(results []result, root string) (moves []result, refusedCount int,
 	return moves, refusedCount, leftInUploadCount
 }
 
-// applyMoves runs the planned moves. Returns the number of files
-// successfully moved, the number that turned out to be refused at
-// rename-time (extra TOCTOU layer), and any fatal error. `root`
-// scopes the optional `git add` so it operates on the intended
-// repository regardless of the caller's CWD.
-func applyMoves(moves []result, root string, gitAdd bool) (moved int, refusedAtMove int, err error) {
+// applyMoves runs the planned moves. Returns the count of files
+// successfully moved, the count refused at rename-time (extra
+// TOCTOU layer), the count of `git add` failures (only relevant
+// when `--git-add` is set), and any fatal error. `root` scopes the
+// rename + git-add to the intended repository regardless of the
+// caller's CWD.
+func applyMoves(moves []result, root string, gitAdd bool) (moved, refusedAtMove, gitAddFailures int, err error) {
 	for i, r := range moves {
 		switch r.outcome {
 		case outcomeMoved, outcomeRoutedUnsorted:
-			fullDst := r.dst
+			fullDst := filepath.Join(root, r.dst)
 			// Re-check for late-arriving conflicts (a parallel
 			// process / earlier file in this same run could have
 			// created the destination).
 			if _, statErr := os.Lstat(fullDst); statErr == nil {
 				moves[i].outcome = outcomeRefused
 				moves[i].reason = fmt.Sprintf("destination already exists: %s", r.dst)
+				fmt.Fprintf(os.Stderr, "[refuse] %s → %s (%s)\n", r.src, r.dst, moves[i].reason)
 				refusedAtMove++
 				continue
 			}
 			if mkErr := os.MkdirAll(filepath.Dir(fullDst), 0o755); mkErr != nil {
-				return moved, refusedAtMove, fmt.Errorf("mkdir %s: %w", filepath.Dir(fullDst), mkErr)
+				return moved, refusedAtMove, gitAddFailures, fmt.Errorf("mkdir %s: %w", filepath.Dir(fullDst), mkErr)
 			}
 			if rnErr := os.Rename(r.src, fullDst); rnErr != nil {
-				return moved, refusedAtMove, fmt.Errorf("rename %s → %s: %w", r.src, fullDst, rnErr)
+				return moved, refusedAtMove, gitAddFailures, fmt.Errorf("rename %s → %s: %w", r.src, fullDst, rnErr)
 			}
 			moved++
 			if gitAdd {
-				// Pass a repo-relative path so `git add` works
-				// regardless of the caller's cwd (the test sets
-				// up its own git repo under root).
 				rel, relErr := filepath.Rel(root, fullDst)
 				if relErr != nil {
-					rel = fullDst
+					rel = r.dst
 				}
 				cmd := exec.Command("git", "add", "--", rel)
 				cmd.Dir = root
 				cmd.Stderr = os.Stderr
 				if gitErr := cmd.Run(); gitErr != nil {
-					fmt.Fprintf(os.Stderr, "git add %s: %v\n", rel, gitErr)
+					gitAddFailures++
+					fmt.Fprintf(os.Stderr, "[git-add-fail] %s: %v\n", rel, gitErr)
 				}
 			}
 		}
 	}
-	return moved, refusedAtMove, nil
+	return moved, refusedAtMove, gitAddFailures, nil
 }
 
-// runMakeIndex shells out to `make index` from the given root. Keeps
-// mibs/INDEX.yaml the canonical post-ingest source of truth.
+// runMakeIndex shells out to `make index` from the given root.
+// Preflights both `make` (must be on PATH) and the existence of a
+// Makefile in `root` so the failure mode is a clear message
+// instead of a cryptic exec error.
 func runMakeIndex(root string) error {
+	if _, err := exec.LookPath("make"); err != nil {
+		return fmt.Errorf("`make` not on PATH; skip with --no-index or install make")
+	}
+	if _, err := os.Stat(filepath.Join(root, "Makefile")); err != nil {
+		return fmt.Errorf("no Makefile at %s; skip with --no-index", root)
+	}
 	cmd := exec.Command("make", "index")
 	cmd.Dir = root
 	cmd.Stdout = os.Stderr
@@ -338,7 +375,7 @@ func runMakeIndex(root string) error {
 	return cmd.Run()
 }
 
-func printDryRun(w io.Writer, moves []result, refused, leftInUpload int) {
+func printDryRun(w io.Writer, moves []result) {
 	for _, r := range moves {
 		switch r.outcome {
 		case outcomeMoved, outcomeRoutedUnsorted:
@@ -352,7 +389,7 @@ func printDryRun(w io.Writer, moves []result, refused, leftInUpload int) {
 	fmt.Fprintln(w, "(dry-run; no files moved, no INDEX.yaml regen)")
 }
 
-func printSummary(w io.Writer, moves []result, moved, refused, leftInUpload int) {
+func printSummary(w io.Writer, moves []result, moved, refused, leftInUpload, gitAddFailures int) {
 	var routedUnsorted int
 	for _, r := range moves {
 		if r.outcome == outcomeRoutedUnsorted {
@@ -363,27 +400,11 @@ func printSummary(w io.Writer, moves []result, moved, refused, leftInUpload int)
 	if highMedium < 0 {
 		highMedium = 0
 	}
-	fmt.Fprintf(w, "ingest: %d moved (%d high/medium → corpus, %d low → unsorted), %d refused, %d left in upload\n",
+	fmt.Fprintf(w,
+		"ingest: %d moved (%d high/medium → corpus, %d low → unsorted), %d refused, %d left in upload",
 		moved, highMedium, routedUnsorted, refused, leftInUpload)
-}
-
-// hasMIBOpener returns true when the first 32 KB of the file
-// contains the `DEFINITIONS ::= BEGIN` marker. Mirrors the loader's
-// bounded-read sniff.
-func hasMIBOpener(path string) (bool, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return false, err
+	if gitAddFailures > 0 {
+		fmt.Fprintf(w, ", %d git-add failures", gitAddFailures)
 	}
-	defer f.Close()
-	const sniffBytes = 32 * 1024
-	buf := make([]byte, sniffBytes+len(definitionsBeginMarker)-1)
-	n, err := io.ReadFull(f, buf)
-	if err == io.EOF || err == io.ErrUnexpectedEOF {
-		return bytes.Contains(buf[:n], definitionsBeginMarker), nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return bytes.Contains(buf[:n], definitionsBeginMarker), nil
+	fmt.Fprintln(w)
 }

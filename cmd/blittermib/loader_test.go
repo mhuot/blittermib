@@ -284,32 +284,5 @@ func TestLoaderRecursiveWalk(t *testing.T) {
 	}
 }
 
-// TestLoaderHasMIBOpener spot-checks the lexical gate that filters out
-// LICENSE / README / partial-write garbage from the recursive walk.
-func TestLoaderHasMIBOpener(t *testing.T) {
-	dir := t.TempDir()
-	cases := []struct {
-		name, body string
-		want       bool
-	}{
-		{"with-marker", "FOO-MIB DEFINITIONS ::= BEGIN\nEND\n", true},
-		{"with-leading-comments", "-- header\n-- more header\nFOO DEFINITIONS ::= BEGIN\n", true},
-		{"no-marker", "Copyright (c) 2024 ...\nNot a MIB at all.\n", false},
-		{"empty", "", false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			path := filepath.Join(dir, c.name)
-			if err := os.WriteFile(path, []byte(c.body), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			got, err := hasMIBOpener(path)
-			if err != nil {
-				t.Fatalf("hasMIBOpener: %v", err)
-			}
-			if got != c.want {
-				t.Errorf("hasMIBOpener(%q) = %v, want %v", c.name, got, c.want)
-			}
-		})
-	}
-}
+// (TestLoaderHasMIBOpener moved to internal/mibcorpus/sniff_test.go
+// after the hasMIBOpener function was hoisted to the shared package.)
