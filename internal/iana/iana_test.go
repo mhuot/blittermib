@@ -9,17 +9,23 @@ import (
 // vendors whose PENs are widely cited in MIB literature. Failure
 // suggests the embed got truncated, replaced, or out of sync with
 // upstream IANA in a way that drops well-known entries.
+//
+// The check is substring-based (case-insensitive) so the test stays
+// stable when `make refresh-pen` brings in the upstream-verbatim
+// form, which differs slightly from the curated v1.0 snapshot
+// (e.g. PEN 9 reads "ciscoSystems" upstream vs "Cisco Systems, Inc."
+// in the curated set).
 func TestPENRegistryWellKnown(t *testing.T) {
 	cases := []struct {
 		pen  uint32
-		want string
+		want string // case-insensitive substring of the org name
 	}{
-		{9, "Cisco Systems, Inc."},
-		{311, "Microsoft Corporation"},
-		{2636, "Juniper Networks, Inc."},
-		{8072, "Net-SNMP"},
-		{22610, "A10 Networks"},
-		{61509, "no42.org"},
+		{9, "cisco"},
+		{311, "microsoft"},
+		{2636, "juniper"},
+		{8072, "net-snmp"},
+		{22610, "a10"},
+		{61509, "no42"},
 	}
 	for _, c := range cases {
 		got, ok := LookupPEN(c.pen)
@@ -27,8 +33,8 @@ func TestPENRegistryWellKnown(t *testing.T) {
 			t.Errorf("LookupPEN(%d): not found", c.pen)
 			continue
 		}
-		if got != c.want {
-			t.Errorf("LookupPEN(%d) = %q, want %q", c.pen, got, c.want)
+		if !strings.Contains(strings.ToLower(got), strings.ToLower(c.want)) {
+			t.Errorf("LookupPEN(%d) = %q, want substring %q", c.pen, got, c.want)
 		}
 	}
 }

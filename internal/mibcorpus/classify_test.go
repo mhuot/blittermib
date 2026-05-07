@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/no42-org/blittermib/internal/iana"
 )
 
 // TestClassify covers the destination-routing rules per design.md
@@ -114,10 +116,17 @@ func TestClassify(t *testing.T) {
 }
 
 // TestSlugOverrideWins asserts that a caller-supplied override beats
-// iana.Slug's rule output.
+// iana.Slug's rule output. Looks up the actual upstream registry
+// form for PEN 9 dynamically so the test stays stable across
+// refresh-pen runs (the upstream form changes between "Cisco
+// Systems, Inc." and "ciscoSystems" depending on registry vintage).
 func TestSlugOverrideWins(t *testing.T) {
+	ciscoName, ok := iana.LookupPEN(9)
+	if !ok {
+		t.Skip("PEN 9 not in embedded registry — corrupted snapshot?")
+	}
 	overrides := map[string]string{
-		"Cisco Systems, Inc.": "cisco-pinned",
+		ciscoName: "cisco-pinned",
 	}
 	cls := Classify("1.3.6.1.4.1.9.9.42", "CISCO-RTTMON-MIB",
 		NewGroupMap(nil), overrides)

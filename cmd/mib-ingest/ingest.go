@@ -23,6 +23,13 @@ import (
 // outcomeUnknown is the zero value so a `result{}` literal that
 // forgets to set the field doesn't accidentally classify as
 // "moved" — defensive default flagged in the post-merge review.
+//
+// outcomeSkippedNonMIB and outcomeParseError both leave the file in
+// upload/, but only the latter is an actionable failure. A file
+// without the SMI lexical marker is a non-MIB the operator dropped
+// alongside their actual MIBs (READMEs, partial downloads); a file
+// with the marker that smidump rejected is a real parse error worth
+// surfacing.
 type outcome int
 
 const (
@@ -30,7 +37,8 @@ const (
 	outcomeMoved                  // moved to canonical destination
 	outcomeRoutedUnsorted         // low confidence → mibs/unsorted/
 	outcomeRefused                // destination already exists
-	outcomeLeftInUpload           // parse failed / no marker / etc.
+	outcomeSkippedNonMIB          // no MIB marker — expected non-MIB file
+	outcomeParseError             // had marker but smidump rejected
 )
 
 type result struct {
@@ -81,7 +89,7 @@ func ingestCmd(args []string) error {
 
 	results, parseErrors := classifyFiles(*smidump, *smilint, *src, *root, files, groups)
 	results = append(results, parseErrors...)
-	moves, refusedCount, leftCount := planMoves(results, *root)
+	moves, refusedCount, skippedNonMIB, parseErrorCount := planMoves(results, *root)
 
 	if *dryRun {
 		printDryRun(os.Stdout, moves)
@@ -90,7 +98,7 @@ func ingestCmd(args []string) error {
 
 	movedCount, refusedAtMove, gitAddFailures, err := applyMoves(moves, *root, *gitAdd)
 	if err != nil {
-		printSummary(os.Stdout, moves, movedCount, refusedCount+refusedAtMove, leftCount, gitAddFailures)
+		printSummary(os.Stdout, moves, movedCount, refusedCount+refusedAtMove, skippedNonMIB, parseErrorCount, gitAddFailures)
 		return err
 	}
 
@@ -101,14 +109,17 @@ func ingestCmd(args []string) error {
 		}
 	}
 
-	printSummary(os.Stdout, moves, movedCount, refusedCount+refusedAtMove, leftCount, gitAddFailures)
+	printSummary(os.Stdout, moves, movedCount, refusedCount+refusedAtMove, skippedNonMIB, parseErrorCount, gitAddFailures)
 
+	// Non-zero exit only on actionable failures. Non-MIB files
+	// dropped in upload/ are EXPECTED collateral when an operator
+	// drops a vendor's archive (READMEs, LICENSEs, partial files);
+	// they don't fail the run. Refusals, parse errors, and
+	// `git add` failures DO.
 	totalRefused := refusedCount + refusedAtMove
-	if totalRefused > 0 || leftCount > 0 || gitAddFailures > 0 {
-		// Non-zero exit if anything didn't make it through cleanly,
-		// so CI / scripted runs detect partial-success.
-		return fmt.Errorf("%d refused, %d left in upload, %d git-add failures",
-			totalRefused, leftCount, gitAddFailures)
+	if totalRefused > 0 || parseErrorCount > 0 || gitAddFailures > 0 {
+		return fmt.Errorf("%d refused, %d parse errors, %d git-add failures",
+			totalRefused, parseErrorCount, gitAddFailures)
 	}
 	return nil
 }
@@ -163,9 +174,13 @@ func classifyFiles(smidumpPath, smilintPath, srcDir, root string, files []string
 	for _, f := range files {
 		ok, err := mibcorpus.HasMIBOpener(f)
 		if err != nil {
+			// Read failures are non-actionable for the operator — the
+			// file is unreadable, but most vendor archives include a
+			// few of these (broken symlinks, mode bits). Treat as
+			// "non-MIB skipped" rather than a parse error.
 			parseErrors = append(parseErrors, result{
 				src:     f,
-				outcome: outcomeLeftInUpload,
+				outcome: outcomeSkippedNonMIB,
 				reason:  fmt.Sprintf("read failed: %v", err),
 			})
 			continue
@@ -173,7 +188,7 @@ func classifyFiles(smidumpPath, smilintPath, srcDir, root string, files []string
 		if !ok {
 			parseErrors = append(parseErrors, result{
 				src:     f,
-				outcome: outcomeLeftInUpload,
+				outcome: outcomeSkippedNonMIB,
 				reason:  "no MIB marker (DEFINITIONS ::= BEGIN absent in first 32 KB)",
 			})
 			continue
@@ -200,9 +215,11 @@ func classifyFiles(smidumpPath, smilintPath, srcDir, root string, files []string
 
 	for _, r := range results {
 		if r.Err != nil || r.Module == nil || r.Module.Name == "" || strings.TrimSpace(r.Module.OIDRoot) == "" {
+			// File had the marker but smidump rejected — actionable
+			// parse error worth surfacing on the exit code.
 			parseErrors = append(parseErrors, result{
 				src:     r.Target,
-				outcome: outcomeLeftInUpload,
+				outcome: outcomeParseError,
 				reason:  parseFailReason(r),
 			})
 			continue
@@ -210,7 +227,7 @@ func classifyFiles(smidumpPath, smilintPath, srcDir, root string, files []string
 		if !mibcorpus.ValidModuleName.MatchString(r.Module.Name) {
 			parseErrors = append(parseErrors, result{
 				src:     r.Target,
-				outcome: outcomeLeftInUpload,
+				outcome: outcomeParseError,
 				reason:  fmt.Sprintf("module name %q contains characters disallowed in a corpus filename", r.Module.Name),
 			})
 			continue
@@ -220,7 +237,7 @@ func classifyFiles(smidumpPath, smilintPath, srcDir, root string, files []string
 		if err != nil {
 			parseErrors = append(parseErrors, result{
 				src:     r.Target,
-				outcome: outcomeLeftInUpload,
+				outcome: outcomeParseError,
 				reason:  err.Error(),
 			})
 			continue
@@ -283,12 +300,23 @@ func classificationToDst(cls mibcorpus.Classification, moduleName, srcPath strin
 // planMoves transforms the classifyFiles output into a list of
 // moves (with destination conflicts pre-checked against the
 // existing corpus state on disk). Returns the move list, count of
-// refusals, count of left-in-upload entries.
-func planMoves(results []result, root string) (moves []result, refusedCount int, leftInUploadCount int) {
+// refusals, count of files left in upload because they aren't MIBs
+// (expected; non-actionable), and count of files that hit a real
+// parse error (actionable).
+func planMoves(results []result, root string) (moves []result, refusedCount, skippedNonMIBCount, parseErrorCount int) {
 	for _, r := range results {
-		if r.outcome == outcomeLeftInUpload {
-			leftInUploadCount++
-			fmt.Fprintf(os.Stderr, "[skip] %s — %s\n", r.src, r.reason)
+		switch r.outcome {
+		case outcomeSkippedNonMIB:
+			skippedNonMIBCount++
+			// Don't spam stderr for the non-MIB case — the summary
+			// reports the count, and per-file logs would drown the
+			// useful output when an operator drops a vendor archive
+			// with hundreds of READMEs.
+			moves = append(moves, r)
+			continue
+		case outcomeParseError:
+			parseErrorCount++
+			fmt.Fprintf(os.Stderr, "[parse-error] %s — %s\n", r.src, r.reason)
 			moves = append(moves, r)
 			continue
 		}
@@ -308,7 +336,7 @@ func planMoves(results []result, root string) (moves []result, refusedCount int,
 		}
 		moves = append(moves, r)
 	}
-	return moves, refusedCount, leftInUploadCount
+	return moves, refusedCount, skippedNonMIBCount, parseErrorCount
 }
 
 // applyMoves runs the planned moves. Returns the count of files
@@ -381,15 +409,17 @@ func printDryRun(w io.Writer, moves []result) {
 		case outcomeMoved, outcomeRoutedUnsorted:
 			fmt.Fprintf(w, "  [%-6s] %s → %s\n", r.conf, r.src, r.dst)
 		case outcomeRefused:
-			fmt.Fprintf(w, "  [refuse] %s — %s\n", r.src, r.reason)
-		case outcomeLeftInUpload:
-			fmt.Fprintf(w, "  [skip ] %s — %s\n", r.src, r.reason)
+			fmt.Fprintf(w, "  [refuse]      %s — %s\n", r.src, r.reason)
+		case outcomeParseError:
+			fmt.Fprintf(w, "  [parse-error] %s — %s\n", r.src, r.reason)
+		case outcomeSkippedNonMIB:
+			fmt.Fprintf(w, "  [non-mib]     %s — %s\n", r.src, r.reason)
 		}
 	}
 	fmt.Fprintln(w, "(dry-run; no files moved, no INDEX.yaml regen)")
 }
 
-func printSummary(w io.Writer, moves []result, moved, refused, leftInUpload, gitAddFailures int) {
+func printSummary(w io.Writer, moves []result, moved, refused, skippedNonMIB, parseErrors, gitAddFailures int) {
 	var routedUnsorted int
 	for _, r := range moves {
 		if r.outcome == outcomeRoutedUnsorted {
@@ -401,8 +431,8 @@ func printSummary(w io.Writer, moves []result, moved, refused, leftInUpload, git
 		highMedium = 0
 	}
 	fmt.Fprintf(w,
-		"ingest: %d moved (%d high/medium → corpus, %d low → unsorted), %d refused, %d left in upload",
-		moved, highMedium, routedUnsorted, refused, leftInUpload)
+		"ingest: %d moved (%d high/medium → corpus, %d low → unsorted), %d refused, %d non-mib skipped, %d parse errors",
+		moved, highMedium, routedUnsorted, refused, skippedNonMIB, parseErrors)
 	if gitAddFailures > 0 {
 		fmt.Fprintf(w, ", %d git-add failures", gitAddFailures)
 	}

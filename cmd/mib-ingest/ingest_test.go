@@ -53,16 +53,20 @@ func TestPlanMovesRoutesByConfidence(t *testing.T) {
 		{src: "mibs/upload/CISCO-FOO-MIB.mib", dst: "mibs/vendors/9-cisco/CISCO-FOO-MIB", conf: mibcorpus.ConfidenceHigh},
 		{src: "mibs/upload/MYSTERY-MIB", dst: "mibs/vendors/999999-unknown/MYSTERY-MIB", conf: mibcorpus.ConfidenceMedium},
 		{src: "mibs/upload/SOMEONE-ELSES-MIB", dst: "mibs/unsorted/SOMEONE-ELSES-MIB", conf: mibcorpus.ConfidenceLow},
-		{src: "mibs/upload/README.txt", outcome: outcomeLeftInUpload, reason: "no MIB marker"},
+		{src: "mibs/upload/README.txt", outcome: outcomeSkippedNonMIB, reason: "no MIB marker"},
+		{src: "mibs/upload/BROKEN-MIB", outcome: outcomeParseError, reason: "smidump failed"},
 	}
-	moves, refused, leftInUpload := planMoves(results, root)
+	moves, refused, skippedNonMIB, parseErrors := planMoves(results, root)
 	if refused != 0 {
 		t.Errorf("refused = %d, want 0 (no destinations seeded)", refused)
 	}
-	if leftInUpload != 1 {
-		t.Errorf("leftInUpload = %d, want 1 (README.txt)", leftInUpload)
+	if skippedNonMIB != 1 {
+		t.Errorf("skippedNonMIB = %d, want 1 (README.txt)", skippedNonMIB)
 	}
-	wantOutcomes := []outcome{outcomeMoved, outcomeMoved, outcomeRoutedUnsorted, outcomeLeftInUpload}
+	if parseErrors != 1 {
+		t.Errorf("parseErrors = %d, want 1 (BROKEN-MIB)", parseErrors)
+	}
+	wantOutcomes := []outcome{outcomeMoved, outcomeMoved, outcomeRoutedUnsorted, outcomeSkippedNonMIB, outcomeParseError}
 	for i, r := range moves {
 		if r.outcome != wantOutcomes[i] {
 			t.Errorf("moves[%d] outcome = %v, want %v", i, r.outcome, wantOutcomes[i])
@@ -84,12 +88,12 @@ func TestPlanMovesRefusesOnExistingDst(t *testing.T) {
 	results := []result{
 		{src: "mibs/upload/CISCO-FOO-MIB.mib", dst: dstRel, conf: mibcorpus.ConfidenceHigh},
 	}
-	moves, refused, leftInUpload := planMoves(results, root)
+	moves, refused, skippedNonMIB, parseErrors := planMoves(results, root)
 	if refused != 1 {
 		t.Errorf("refused = %d, want 1", refused)
 	}
-	if leftInUpload != 0 {
-		t.Errorf("leftInUpload = %d, want 0", leftInUpload)
+	if skippedNonMIB != 0 || parseErrors != 0 {
+		t.Errorf("skippedNonMIB=%d parseErrors=%d, want 0/0", skippedNonMIB, parseErrors)
 	}
 	if moves[0].outcome != outcomeRefused {
 		t.Errorf("outcome = %v, want refused", moves[0].outcome)
@@ -185,7 +189,7 @@ func TestPrintSummary(t *testing.T) {
 		{outcome: outcomeMoved, conf: mibcorpus.ConfidenceMedium},
 		{outcome: outcomeRoutedUnsorted, conf: mibcorpus.ConfidenceLow},
 	}
-	printSummary(&buf, moves, 3, 0, 0, 0)
+	printSummary(&buf, moves, 3, 0, 0, 0, 0)
 	got := buf.String()
 	for _, want := range []string{"3 moved", "2 high/medium", "1 low → unsorted"} {
 		if !strings.Contains(got, want) {
@@ -200,7 +204,7 @@ func TestPrintSummary(t *testing.T) {
 func TestPrintSummaryGitAddFailures(t *testing.T) {
 	var buf bytes.Buffer
 	moves := []result{{outcome: outcomeMoved, conf: mibcorpus.ConfidenceHigh}}
-	printSummary(&buf, moves, 1, 0, 0, 2)
+	printSummary(&buf, moves, 1, 0, 0, 0, 2)
 	if !strings.Contains(buf.String(), "2 git-add failures") {
 		t.Errorf("summary missing git-add failures count; got %q", buf.String())
 	}
@@ -234,8 +238,10 @@ func TestIngestDryRun(t *testing.T) {
 }
 
 // TestIngestExitCode asserts the binary returns nil on a clean
-// ingest (empty upload) and non-nil when a file is left in upload
-// (failed marker check).
+// ingest. A non-MIB file (no marker) is EXPECTED collateral when an
+// operator drops a vendor archive alongside their MIBs and does NOT
+// produce a non-zero exit — only refusals, parse errors, and
+// `git add` failures do.
 func TestIngestExitCode(t *testing.T) {
 	root := t.TempDir()
 	upload := filepath.Join(root, "mibs/upload")
@@ -252,7 +258,9 @@ func TestIngestExitCode(t *testing.T) {
 		t.Errorf("empty upload: got error %v, want nil", err)
 	}
 
-	// Drop a non-MIB file → left in upload → non-zero exit.
+	// Drop a non-MIB file → it stays in upload as a "non-mib
+	// skipped" outcome. Clean exit (operators routinely drop
+	// READMEs alongside real MIBs and shouldn't see exit 1).
 	if err := os.WriteFile(filepath.Join(upload, "GARBAGE.mib"), []byte("not a mib\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +268,7 @@ func TestIngestExitCode(t *testing.T) {
 		"--src", upload,
 		"--root", root,
 		"--no-index",
-	}); err == nil {
-		t.Error("garbage file: got nil, want error (file left in upload)")
+	}); err != nil {
+		t.Errorf("non-MIB file: got error %v, want nil (non-MIB skips don't fail the run)", err)
 	}
 }

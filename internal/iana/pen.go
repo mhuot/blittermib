@@ -137,6 +137,13 @@ func Slug(name string) string {
 		return s
 	}
 
+	// Strip parenthetical content before tokenising. The upstream
+	// IANA registry routinely annotates renamed PENs with
+	// "(previously 'Old Name')" — without this strip, a slug for
+	// PEN 22610 becomes "a10-networks-previou" (truncated garbage)
+	// instead of "a10".
+	name = stripParens(name)
+
 	// Build a normalised string containing only [a-z 0-9 - ] — every
 	// other rune (punctuation, non-ASCII) becomes a space. This keeps
 	// slugs portable across filesystems and avoids byte-truncation
@@ -213,4 +220,34 @@ var slugOverrides = map[string]string{
 	"hewlett-packard":            "hp",
 	"hewlett packard":            "hp",
 	"no42.org":                   "no42",
+	// Upstream IANA forms — `make refresh-pen` brings these in
+	// verbatim. Without the override the rule path produces an
+	// awkward slug (e.g. "ciscosystems" instead of "cisco").
+	"ciscosystems": "cisco",
+}
+
+// stripParens removes content from `(` through the matching `)`,
+// including the parens themselves. Handles unbalanced cases by
+// dropping everything from the first unmatched `(`. Used by Slug to
+// strip "(previously 'Old Name')" annotations the IANA registry
+// adds for renamed PENs.
+func stripParens(s string) string {
+	depth := 0
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth == 0 {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
 }
