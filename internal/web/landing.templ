@@ -23,9 +23,11 @@ templ Landing(modules, symbols int) {
 					placeholder="Search symbols, OIDs, modules, descriptions&hellip;"
 					autocomplete="off"
 					autofocus
-					aria-label="Search"/>
+					aria-label="Search"
+					aria-controls="hero-results"/>
 				<span class="kbd" aria-hidden="true">⌘K</span>
 			</form>
+			<ul class="hero-results" id="hero-results" data-state="hidden" role="listbox"></ul>
 			<div class="hero-stats">
 				<strong>{ fmt.Sprintf("%d", modules) }</strong> modules
 				<span class="sep">·</span>
