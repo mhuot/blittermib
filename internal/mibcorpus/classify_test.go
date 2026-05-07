@@ -65,8 +65,23 @@ func TestClassify(t *testing.T) {
 			wantDir: "experimental", wantConf: ConfidenceHigh,
 		},
 		{
-			name: "Empty OID → unsorted",
+			name: "Empty OID + module name in _groups.yaml → ietf/{group}",
+			oid:  "", module: "IF-MIB",
+			wantDir: "ietf/interfaces", wantConf: ConfidenceHigh,
+		},
+		{
+			name: "Empty OID + module name not in _groups.yaml → ietf/other (SMIv1 fallback)",
 			oid:  "", module: "BROKEN",
+			wantDir: "ietf/other", wantConf: ConfidenceHigh,
+		},
+		{
+			name: "Empty OID + invalid module name → unsorted",
+			oid:  "", module: "no/slash/here",
+			wantDir: "unsorted", wantConf: ConfidenceLow,
+		},
+		{
+			name: "Empty OID + empty module name → unsorted",
+			oid:  "", module: "",
 			wantDir: "unsorted", wantConf: ConfidenceLow,
 		},
 		{

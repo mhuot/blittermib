@@ -58,6 +58,9 @@ type Classification struct {
 //     groupMap, falls back to "other") (high)
 //   - .1.3.6.1.6.*         → iana/                  (high)
 //   - .1.3.6.1.3.*         → experimental/          (high)
+//   - empty OID + name set → ietf/{group}/ if name is in groupMap,
+//     ietf/other/ otherwise (high). Covers SMIv1 modules and
+//     TC-only modules that predate MODULE-IDENTITY.
 //   - everything else      → unsorted/              (low)
 //
 // slugOverrides is consulted before iana.Slug when resolving the
@@ -71,6 +74,18 @@ func Classify(oid, moduleName string, groups GroupMap, slugOverrides map[string]
 	// everything to unsorted.
 	oid = strings.TrimPrefix(strings.TrimSpace(oid), ".")
 	if oid == "" {
+		// SMIv1 / TC-only modules don't carry MODULE-IDENTITY, so
+		// smidump produces no OID. Route by name when we have one.
+		// A pre-1996 vendor MIB without MODULE-IDENTITY would
+		// mis-route here, but that's exotic enough that the operator-
+		// review workflow catches it.
+		if ValidModuleName.MatchString(moduleName) {
+			group := groups.GroupOf(moduleName)
+			if group == "" {
+				group = "other"
+			}
+			return Classification{DstDir: "ietf/" + group, Confidence: ConfidenceHigh}
+		}
 		return Classification{DstDir: "unsorted", Confidence: ConfidenceLow}
 	}
 	parts := strings.Split(oid, ".")

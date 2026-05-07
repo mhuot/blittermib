@@ -214,9 +214,11 @@ func classifyFiles(smidumpPath, smilintPath, srcDir, root string, files []string
 	results := c.Compile(ctx, keep)
 
 	for _, r := range results {
-		if r.Err != nil || r.Module == nil || r.Module.Name == "" || strings.TrimSpace(r.Module.OIDRoot) == "" {
+		if r.Err != nil || r.Module == nil || r.Module.Name == "" {
 			// File had the marker but smidump rejected — actionable
-			// parse error worth surfacing on the exit code.
+			// parse error worth surfacing on the exit code. A missing
+			// MODULE-IDENTITY OID is NOT counted here; mibcorpus.
+			// Classify routes SMIv1 / TC-only modules by name.
 			parseErrors = append(parseErrors, result{
 				src:     r.Target,
 				outcome: outcomeParseError,
@@ -271,7 +273,7 @@ func parseFailReason(r compile.Result) string {
 	if r.Module.Name == "" {
 		return "smidump produced empty module name"
 	}
-	return "smidump produced incomplete module (no MODULE-IDENTITY OID)"
+	return "smidump rejected module"
 }
 
 // classificationToDst returns the repo-relative destination path
