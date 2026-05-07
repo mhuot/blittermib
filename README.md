@@ -22,8 +22,9 @@ anything to a third party.
   with `INDEX` columns flagged
 - **Cross-references** — every symbol page lists what indexes,
   augments, groups, or notifications reference it
-- **Hot reload** — drop a MIB into the watched directory and it appears
-  in seconds (`fsnotify` + 250 ms debounce + transactional ingest)
+- **Hot reload** — drop a MIB anywhere under the watched directory and
+  it appears in seconds (recursive `fsnotify` + 250 ms debounce +
+  transactional ingest)
 - **Self-hosted** — single binary, no telemetry, no phone-home
 - **Standard MIBs bundled** — IETF/IANA core MIBs ship inside the binary
   so the tool is useful before you supply anything yourself
