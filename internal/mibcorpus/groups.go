@@ -1,4 +1,4 @@
-package main
+package mibcorpus
 
 import (
 	"errors"
@@ -12,10 +12,19 @@ import (
 
 // GroupMap is the inverted form of mibs/_groups.yaml: module name →
 // IETF function group ("core", "transport", "interfaces", …). Empty
-// when the file is missing or hasn't been seeded yet — the migration
-// tool falls back to ietf/other in that case.
+// when the file is missing or hasn't been seeded yet — callers fall
+// back to ietf/other in that case.
 type GroupMap struct {
 	byModule map[string]string
+}
+
+// NewGroupMap builds a GroupMap from a module-name → group map.
+// Used by tests that want to inject a fixture without touching disk.
+func NewGroupMap(byModule map[string]string) GroupMap {
+	if byModule == nil {
+		byModule = map[string]string{}
+	}
+	return GroupMap{byModule: byModule}
 }
 
 // LoadGroups reads a _groups.yaml file. The file format is:
@@ -27,7 +36,9 @@ type GroupMap struct {
 //	other:       []  # default for unclassified IETF MIBs
 //
 // A missing file returns an empty (non-nil) map and no error so the
-// caller can run before the corpus has been seeded.
+// caller can run before the corpus has been seeded. A duplicate
+// module across two groups is rejected — Go's map iteration order
+// would otherwise produce non-deterministic group assignment.
 func LoadGroups(path string) (GroupMap, error) {
 	if path == "" {
 		return GroupMap{byModule: map[string]string{}}, nil
@@ -50,10 +61,6 @@ func LoadGroups(path string) (GroupMap, error) {
 			if m == "" {
 				continue
 			}
-			// Detect duplicate module assignments — Go map iteration
-			// is randomized, so without this check a module listed
-			// under two groups would be assigned non-deterministically
-			// across runs.
 			if existing, dup := by[m]; dup && existing != group {
 				return GroupMap{}, fmt.Errorf(
 					"%s: module %q listed in both %q and %q groups",

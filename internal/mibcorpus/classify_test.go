@@ -1,4 +1,4 @@
-package main
+package mibcorpus
 
 import (
 	"os"
@@ -7,16 +7,16 @@ import (
 	"testing"
 )
 
-// TestMigratePlanClassification asserts the destination-routing rules
-// per design.md Decision 9. Tests the pure classification function —
-// the libsmi-driven plan pipeline is integration-tested manually
-// against a real corpus.
-func TestMigratePlanClassification(t *testing.T) {
-	groups := GroupMap{byModule: map[string]string{
+// TestClassify covers the destination-routing rules per design.md
+// Decision 9 of the mib-corpus change. Tests the pure classification
+// function — the libsmi-driven plan pipelines that consume Classify
+// are integration-tested separately.
+func TestClassify(t *testing.T) {
+	groups := NewGroupMap(map[string]string{
 		"IF-MIB":           "interfaces",
 		"SNMPv2-SMI":       "core",
 		"INET-ADDRESS-MIB": "transport",
-	}}
+	})
 
 	cases := []struct {
 		name       string
@@ -113,14 +113,14 @@ func TestMigratePlanClassification(t *testing.T) {
 	}
 }
 
-// TestMigrationSlugOverrideWins asserts that an entry in
-// MigrationSlugOverrides beats iana.Slug's rule output.
-func TestMigrationSlugOverrideWins(t *testing.T) {
+// TestSlugOverrideWins asserts that a caller-supplied override beats
+// iana.Slug's rule output.
+func TestSlugOverrideWins(t *testing.T) {
 	overrides := map[string]string{
 		"Cisco Systems, Inc.": "cisco-pinned",
 	}
 	cls := Classify("1.3.6.1.4.1.9.9.42", "CISCO-RTTMON-MIB",
-		GroupMap{byModule: map[string]string{}}, overrides)
+		NewGroupMap(nil), overrides)
 	if cls.Vendor != "cisco-pinned" {
 		t.Errorf("Vendor = %q, want cisco-pinned (override should win)", cls.Vendor)
 	}
@@ -130,7 +130,7 @@ func TestMigrationSlugOverrideWins(t *testing.T) {
 }
 
 // TestLoadGroupsMissing asserts a missing _groups.yaml is non-fatal
-// and yields an empty map (so plan can run before §8 lands).
+// and yields an empty map.
 func TestLoadGroupsMissing(t *testing.T) {
 	g, err := LoadGroups(filepath.Join(t.TempDir(), "does-not-exist.yaml"))
 	if err != nil {
@@ -168,5 +168,21 @@ func TestLoadGroupsParse(t *testing.T) {
 		if got := g.GroupOf(mod); got != want {
 			t.Errorf("GroupOf(%q) = %q, want %q", mod, got, want)
 		}
+	}
+}
+
+// TestLoadGroupsRejectsDuplicate covers the duplicate-module guard:
+// the same module listed under two groups must surface as an error
+// rather than producing non-deterministic group assignment via map
+// iteration order.
+func TestLoadGroupsRejectsDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "_groups.yaml")
+	body := "core: [DUPE-MIB]\ntransport: [DUPE-MIB]\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadGroups(path); err == nil {
+		t.Error("LoadGroups accepted a module listed in two groups; want error")
 	}
 }
