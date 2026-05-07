@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/no42-org/blittermib/internal/compile"
-	"github.com/no42-org/blittermib/internal/mibsbundle"
 	"github.com/no42-org/blittermib/internal/server"
 	"github.com/no42-org/blittermib/internal/store"
 	"github.com/no42-org/blittermib/internal/watch"
@@ -97,7 +96,6 @@ func run(cfg config) error {
 		return fmt.Errorf("create mibs dir: %w", err)
 	}
 	dbPath := filepath.Join(cfg.dataDir, "blittermib.db")
-	standardDir := filepath.Join(cfg.dataDir, "standard-mibs")
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -115,31 +113,13 @@ func run(cfg config) error {
 		"listen", cfg.listen,
 	)
 
-	// Stage the embedded standard MIB bundle so libsmi can resolve
-	// IMPORTS for SNMPv2-SMI, SNMPv2-TC, etc. without requiring the
-	// user to ship their own copy. User-supplied MIBs in mibsDir
-	// override on filename collision (loaded after, ReplaceModule
-	// is per-module so the second wins).
-	staged, err := mibsbundle.Stage(standardDir)
-	if err != nil {
-		slog.Warn("staging standard MIBs failed", "err", err)
-	} else if len(staged) > 0 {
-		slog.Info("staged standard MIBs", "count", len(staged), "dir", standardDir)
-	}
-
-	// Two intentionally different orderings:
-	//
-	//   importPaths  — passed to libsmi via -p. libsmi searches in
-	//                  order and uses the FIRST match for IMPORTS,
-	//                  so the user dir comes first: a user-supplied
-	//                  SNMPv2-SMI is preferred over the bundled one.
-	//
-	//   loadDirs     — passed to loader.loadAll. Modules are
-	//                  ReplaceModule'd in compile order, so standard
-	//                  comes first and user comes last; the user's
-	//                  compile run wins on filename collision.
-	importPaths := []string{cfg.mibsDir, standardDir}
-	loadDirs := []string{standardDir, cfg.mibsDir}
+	// Single source of truth: the corpus at cfg.mibsDir. Post
+	// unify-mib-sources (2026-05-07) the embedded bundle and its
+	// {data}/standard-mibs/ staging dir are gone — every MIB the
+	// binary serves comes from the corpus, including the standard
+	// IETF/IANA MIBs. libsmi's IMPORTS resolution uses a recursive
+	// walk via the loader.
+	importPaths := []string{cfg.mibsDir}
 
 	loader := &loader{
 		compiler: &compile.Compiler{
@@ -149,10 +129,7 @@ func run(cfg config) error {
 		store: st,
 	}
 
-	// Initial scan: parse and ingest everything currently in the
-	// standard bundle and the user's MIB directory. Failures are
-	// logged per-module; a busted MIB doesn't abort startup.
-	if err := loader.loadAll(ctx, loadDirs...); err != nil {
+	if err := loader.loadAll(ctx, cfg.mibsDir); err != nil {
 		slog.Warn("initial mib load encountered errors", "err", err)
 	}
 
@@ -172,7 +149,7 @@ func run(cfg config) error {
 		}
 	}()
 
-	srv := server.New(st, cfg.listen, version, cfg.mibsDir, standardDir)
+	srv := server.New(st, cfg.listen, version, cfg.mibsDir)
 	err = srv.Start(ctx)
 	wg.Wait()
 

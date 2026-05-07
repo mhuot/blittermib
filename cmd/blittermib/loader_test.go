@@ -139,11 +139,7 @@ func TestE2E_CompileStoreDownload(t *testing.T) {
 
 	dir := t.TempDir()
 	mibsDir := filepath.Join(dir, "mibs")
-	stdDir := filepath.Join(dir, "data", "standard-mibs")
 	if err := os.MkdirAll(mibsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(stdDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -158,7 +154,7 @@ func TestE2E_CompileStoreDownload(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	importPaths := []string{mibsDir, stdDir}
+	importPaths := []string{mibsDir}
 	ldr := &loader{
 		compiler: &compile.Compiler{
 			Smidump: &compile.Smidump{Path: "smidump", Paths: importPaths},
@@ -181,7 +177,7 @@ func TestE2E_CompileStoreDownload(t *testing.T) {
 		t.Errorf("SourcePath = %q, want absolute path", mod.SourcePath)
 	}
 
-	srv := server.New(st, "", "test", mibsDir, stdDir)
+	srv := server.New(st, "", "test", mibsDir)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
