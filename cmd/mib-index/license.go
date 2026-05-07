@@ -8,36 +8,22 @@ import (
 )
 
 // licensePattern pairs a regex against the canonical tag emitted in
-// INDEX.yaml. Order matters in two ways:
-//
-//   - Vendor patterns run BEFORE rfc-editor: real Cisco/Juniper/etc.
-//     MIBs frequently quote IETF boilerplate ("Copyright ... IETF
-//     Trust") near the top alongside their own copyright. Putting
-//     rfc-editor last ensures vendor attribution wins.
-//   - Among vendors, more-specific patterns appear before more-general
-//     ones (e.g. "Hewlett-Packard Enterprise" before "Hewlett-Packard")
-//     so a multi-tier vendor doesn't get downgraded.
+// INDEX.yaml. New patterns should be added alongside a matching
+// `mibs/LICENSES/<tag>.txt` file so INDEX.yaml never references a
+// missing license text.
 type licensePattern struct {
 	tag string
 	re  *regexp.Regexp
 }
 
-// licensePatterns is the v1.0 starter set per design.md Decision 4.
-// Each pattern requires `\bCopyright\b` (so "Copyrighted" doesn't
-// match) and a word-bounded vendor anchor on the same line. New tags
-// should be added with care — and accompanied by a
-// `mibs/LICENSES/<tag>.txt` file.
+// licensePatterns currently recognises only the rfc-editor boilerplate
+// ("The Internet Society" / "IETF Trust"). The v1.0 starter set
+// included Cisco/Juniper/HP(E)/Aruba/Huawei/A10/Mellanox/Brocade/
+// Extreme entries; those were pruned when the corpus was reduced to
+// just the standard libsmi seed. When a vendor MIB drop returns,
+// re-add the relevant pattern here AND restore
+// `mibs/LICENSES/<tag>.txt` in the same change.
 var licensePatterns = []licensePattern{
-	{tag: "cisco", re: regexp.MustCompile(`(?i)\bCopyright\b[^\n]*\bCisco Systems\b`)},
-	{tag: "juniper", re: regexp.MustCompile(`(?i)\bCopyright\b[^\n]*\bJuniper Networks\b`)},
-	{tag: "hpe", re: regexp.MustCompile(`(?i)\bCopyright\b[^\n]*\bHewlett[- ]Packard Enterprise\b`)},
-	{tag: "hp", re: regexp.MustCompile(`(?i)\bCopyright\b[^\n]*\bHewlett[- ]Packard\b`)},
-	{tag: "aruba", re: regexp.MustCompile(`(?i)\bCopyright\b[^\n]*\bAruba Networks\b`)},
-	{tag: "huawei", re: regexp.MustCompile(`(?i)\bCopyright\b[^\n]*\bHuawei Technologies\b`)},
-	{tag: "a10", re: regexp.MustCompile(`(?i)\bCopyright\b[^\n]*\bA10 Networks\b`)},
-	{tag: "mellanox", re: regexp.MustCompile(`(?i)\bCopyright\b[^\n]*\bMellanox\b`)},
-	{tag: "brocade", re: regexp.MustCompile(`(?i)\bCopyright\b[^\n]*\bBrocade\b`)},
-	{tag: "extreme", re: regexp.MustCompile(`(?i)\bCopyright\b[^\n]*\bExtreme Networks\b`)},
 	{tag: "rfc-editor", re: regexp.MustCompile(`(?i)\bCopyright\b[^\n]*(?:The Internet Society|IETF Trust)\b`)},
 }
 

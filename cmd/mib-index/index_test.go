@@ -9,9 +9,12 @@ import (
 )
 
 // seedCorpus writes a small fixture corpus into a tempdir and returns
-// the path. The corpus has one Cisco vendor MIB, one IETF MIB, one
-// MIB without a copyright header (→ unknown license), and an
-// `_overrides.yaml` that pins the third entry.
+// the path. The corpus has one Cisco-flavoured vendor MIB (license
+// detector falls to "unknown" because the cisco pattern was pruned —
+// PEN/vendor classification still applies via the path), one IETF
+// MIB (rfc-editor pattern matches), one MIB without a copyright
+// header (→ unknown license), and an `_overrides.yaml` that pins the
+// third entry.
 func seedCorpus(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -52,7 +55,7 @@ END
 	mustWrite(t, filepath.Join(dir, "vendors/61509-no42/BARE-VENDOR-MIB"), bare)
 
 	overrides := `licenses:
-  BARE-VENDOR-MIB: vendor-public
+  BARE-VENDOR-MIB: rfc-editor
 `
 	mustWrite(t, filepath.Join(dir, "_overrides.yaml"), overrides)
 
@@ -138,13 +141,15 @@ func TestIndexEntryFields(t *testing.T) {
 		prev = idx
 	}
 
-	// Cisco entry has pen + vendor.
+	// Cisco entry has pen + vendor; license falls to "unknown"
+	// because the cisco pattern was pruned alongside the corpus
+	// reduction to standard libsmi MIBs.
 	must := []string{
 		"file: vendors/9-cisco/CISCO-EXAMPLE-MIB",
 		"module: CISCO-EXAMPLE-MIB",
 		"pen: 9",
 		"vendor: cisco",
-		"license: cisco",
+		"license: unknown",
 	}
 	for _, m := range must {
 		if !strings.Contains(got, m) {
@@ -153,8 +158,9 @@ func TestIndexEntryFields(t *testing.T) {
 	}
 
 	// Override wins for BARE-VENDOR-MIB.
-	if !strings.Contains(got, "license: vendor-public") {
-		t.Errorf("override license not applied; output:\n%s", got)
+	bareSection := sectionByMarker(got, "file: vendors/61509-no42/BARE-VENDOR-MIB")
+	if !strings.Contains(bareSection, "license: rfc-editor") {
+		t.Errorf("override license not applied; section:\n%s", bareSection)
 	}
 
 	// IETF MIB has no pen/vendor lines.

@@ -7,14 +7,16 @@
 # starter patterns and you want to ship a more accurate tag than
 # `unknown`.
 #
-# License tags MUST appear in `mibs/LICENSES/`. Common values:
-#   rfc-editor, cisco, juniper, hp, hpe, aruba, huawei, a10,
-#   mellanox, brocade, extreme, vendor-public, unknown.
+# License tags MUST appear in `mibs/LICENSES/`. Current values:
+#   rfc-editor, unknown.
+# When a vendor MIB drop returns, restore the matching pattern in
+# `cmd/mib-index/license.go::licensePatterns` AND the matching
+# `mibs/LICENSES/<tag>.txt` in the same change.
 #
 # Example (commented out):
 #
 # licenses:
-#   WEIRD-VENDOR-MIB: vendor-public
+#   WEIRD-VENDOR-MIB: rfc-editor
 #   ANCIENT-RFC-MIB:  rfc-editor
 
 licenses: {}
