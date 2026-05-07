@@ -42,10 +42,30 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install libsmi
+      - name: Build libsmi 0.5.0 from source
+        # Ubuntu 24.04 (Noble) ships smitools 0.4.8, but that smidump
+        # hits "internal error" on a non-trivial slice of the corpus
+        # (TIME-AGGREGATE-MIB, AGGREGATE-MIB, OSPF-MIB, HPR-MIB,
+        # ADSL-TC-MIB, …) that 0.5.0 parses cleanly. The Makefile's
+        # `LIBSMI_MIN := 0.5.0` documents 0.5.0 as the floor; this
+        # step makes CI honour it. Same tarball
+        # `make fetch-standard-mibs` already pulls.
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y smitools
+          sudo apt-get install -y flex bison build-essential
+          tmp=$(mktemp -d)
+          curl -fL --silent --show-error \
+              -o "$tmp/libsmi.tar.gz" \
+              https://www.ibr.cs.tu-bs.de/projects/libsmi/download/libsmi-0.5.0.tar.gz
+          cd "$tmp"
+          tar -xzf libsmi.tar.gz
+          cd libsmi-0.5.0
+          ./configure --prefix=/usr/local --quiet
+          make -j"$(nproc)" -s
+          sudo make install -s
+          sudo ldconfig
+          smidump -V
 
       - name: Tier 1 — Lexical
         run: make verify-mibs-lexical
