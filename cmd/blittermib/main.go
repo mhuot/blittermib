@@ -117,9 +117,18 @@ func run(cfg config) error {
 	// unify-mib-sources (2026-05-07) the embedded bundle and its
 	// {data}/standard-mibs/ staging dir are gone — every MIB the
 	// binary serves comes from the corpus, including the standard
-	// IETF/IANA MIBs. libsmi's IMPORTS resolution uses a recursive
-	// walk via the loader.
-	importPaths := []string{cfg.mibsDir}
+	// IETF/IANA MIBs.
+	//
+	// libsmi resolves IMPORTS via SMIPATH (set in the compile
+	// subprocess env). SMIPATH treats every entry as a flat
+	// directory of MIB files, so we expand cfg.mibsDir to its
+	// recursive subdir list — otherwise modules under `upload/`,
+	// `vendors/{PEN}-{slug}/`, or any non-standard subdir would be
+	// invisible to the parser when another MIB imports them.
+	importPaths, err := walkMIBDirs(cfg.mibsDir)
+	if err != nil {
+		return fmt.Errorf("walk mibs dir: %w", err)
+	}
 
 	loader := &loader{
 		compiler: &compile.Compiler{

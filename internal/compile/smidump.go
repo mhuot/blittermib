@@ -56,9 +56,6 @@ func (s *Smidump) run(ctx context.Context, target string) (*SMI, []model.Diagnos
 	// -q: keep stderr free of non-error chatter so cmd.Output()'s
 	// captured stderr is meaningful when the exit code IS non-zero.
 	args := []string{"-f", "xml", "-k", "-q"}
-	for _, p := range s.Paths {
-		args = append(args, "-p", p)
-	}
 	// `--` ends flag parsing — protects against MIB filenames that
 	// happen to start with a dash being interpreted as smidump options.
 	args = append(args, "--", target)
@@ -68,6 +65,7 @@ func (s *Smidump) run(ctx context.Context, target string) (*SMI, []model.Diagnos
 	// happily print warnings to stderr and exit 0 — we want those
 	// diagnostics regardless of exit code.
 	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = smiEnv(s.Paths)
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf

@@ -187,3 +187,39 @@ func walkMIBFiles(dir string) ([]string, error) {
 	})
 	return out, err
 }
+
+// walkMIBDirs returns every subdirectory under root (root itself
+// included), suitable for handing to libsmi via SMIPATH so the
+// parser can resolve IMPORTS across the whole corpus regardless of
+// layout. Skip rules mirror walkMIBFiles' directory pruning:
+//
+//   - directories whose basename starts with `.` (hidden / `.git`)
+//   - the corpus's `LICENSES/` directory (it never holds MIBs)
+//
+// Symlinked directories are not followed (filepath.WalkDir uses
+// Lstat, so symlinks surface as non-dir entries). On a fresh
+// corpus root that doesn't yet exist on disk we return the root
+// alone — the caller (cfg.mibsDir is mkdir-all'd before this) just
+// gets an empty SMIPATH entry, which libsmi tolerates.
+func walkMIBDirs(root string) ([]string, error) {
+	var out []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			slog.Warn("walk error; skipping", "path", path, "err", err)
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if path != root && (strings.HasPrefix(name, ".") || name == "LICENSES") {
+			return filepath.SkipDir
+		}
+		out = append(out, path)
+		return nil
+	})
+	return out, err
+}

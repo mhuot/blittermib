@@ -45,14 +45,12 @@ func (s *Smilint) Lint(ctx context.Context, target string) ([]model.Diagnostic, 
 	if s.Level >= 0 {
 		args = append(args, "-l", strconv.Itoa(s.Level))
 	}
-	for _, p := range s.Paths {
-		args = append(args, "-p", p)
-	}
 	// `--` ends flag parsing so a MIB filename starting with `-`
 	// won't be mistaken for a flag.
 	args = append(args, "--", target)
 
 	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = smiEnv(s.Paths)
 	combined, err := cmd.CombinedOutput()
 	if len(combined) == 0 && err != nil {
 		return nil, err
