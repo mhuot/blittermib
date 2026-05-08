@@ -475,6 +475,106 @@ func TestDeleteWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestUploadIndexAllStates asserts every row state surfaces on the
+// /upload page: a loaded module, a parse-error entry, a non-MIB
+// entry, and a shadow annotation when an upload masks a corpus
+// file with the same basename.
+func TestUploadIndexAllStates(t *testing.T) {
+	t.Setenv("BLITTERMIB_UPLOAD_ENABLED", "true")
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	mibsDir := t.TempDir()
+	uploadDir := filepath.Join(mibsDir, "upload")
+	if err := os.MkdirAll(filepath.Join(mibsDir, "ietf", "core"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// loaded — file in upload + module entry pointing at it.
+	loadedPath := filepath.Join(uploadDir, "LOADED-MIB")
+	if err := os.WriteFile(loadedPath, []byte(minimalMIB), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReplaceModule(context.Background(),
+		&model.Module{
+			Name:        "LOADED-MIB",
+			SourcePath:  loadedPath,
+			ParseStatus: model.ParseStatusClean,
+		}, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// parse error — file in upload, has marker, no module entry.
+	if err := os.WriteFile(filepath.Join(uploadDir, "BROKEN-MIB"), []byte(minimalMIB), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// non-MIB skipped — file in upload, no marker.
+	if err := os.WriteFile(filepath.Join(uploadDir, "README"), []byte("not a MIB\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// shadow — file with same basename in the corpus and upload.
+	if err := os.WriteFile(filepath.Join(mibsDir, "ietf", "core", "SHADOWED-MIB"), []byte(minimalMIB), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	shadowedUpload := filepath.Join(uploadDir, "SHADOWED-MIB")
+	if err := os.WriteFile(shadowedUpload, []byte(minimalMIB), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReplaceModule(context.Background(),
+		&model.Module{
+			Name:        "SHADOWED-MIB",
+			SourcePath:  shadowedUpload,
+			ParseStatus: model.ParseStatusClean,
+		}, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(st, "", "test", mibsDir)
+	s.EnableUploads(noopLoad)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	body := getBody(t, ts.URL+"/upload")
+	for _, want := range []string{
+		"Files in <code>upload/</code>",
+		"LOADED-MIB",
+		"loaded",
+		"BROKEN-MIB",
+		"parse error",
+		"README",
+		"non-MIB skipped",
+		"SHADOWED-MIB",
+		"shadows:",
+		"ietf/core/SHADOWED-MIB",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/upload missing %q\nbody excerpt:\n%s", want, excerpt(body, "Files in", 1500))
+		}
+	}
+}
+
+// TestUploadIndexGatedOff asserts /upload returns 404 when the env
+// var is unset (the route isn't registered).
+func TestUploadIndexGatedOff(t *testing.T) {
+	t.Setenv("BLITTERMIB_UPLOAD_ENABLED", "")
+	ts := newTestServerForUpload(t, nil)
+	resp, err := http.Get(ts.URL + "/upload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
 // TestLandingDropZoneGated asserts the drop zone fragment appears
 // in the landing-page HTML if and only if uploads are enabled. We
 // drive both branches (Landing and LandingEmpty) — the "empty

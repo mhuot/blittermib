@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/no42-org/blittermib/internal/mibcorpus"
 	"github.com/no42-org/blittermib/internal/model"
+	"github.com/no42-org/blittermib/internal/web"
 )
 
 // maxUploadFileSize is the per-file cap (D7). 10 MB covers all
@@ -286,8 +288,135 @@ func (s *Server) handleUploadDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleUploadIndex renders the /upload management page: the same
+// drop zone the landing page hosts, plus a list of every entry
+// currently in mibs/upload/ regardless of load state. Each row
+// shows the filename, size, load state (loaded / parse error /
+// non-MIB), and a delete affordance. Files whose module name also
+// resolves to a corpus path outside upload/ get a `shadows: <path>`
+// annotation per design.md D10.
 func (s *Server) handleUploadIndex(w http.ResponseWriter, r *http.Request) {
-	// §5.1–§5.2: list mibs/upload/, render templ with drop zone +
-	// per-file rows + delete buttons.
-	http.Error(w, "upload-index handler not yet implemented", http.StatusNotImplemented)
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rows, err := s.uploadRows(r.Context())
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	render(w, r, http.StatusOK, web.UploadIndex(rows))
+}
+
+// uploadRows lists mibs/upload/ entries (skipping .gitkeep and
+// .tmp/) and decorates each with load state + shadow annotation.
+//
+// Shadow detection: if the basename appears anywhere else under
+// s.mibsDir (outside upload/), the row carries the corpus-relative
+// path of that file. Walked once per request — for a 322-file
+// corpus this is <50 ms; not worth caching for v1.
+func (s *Server) uploadRows(ctx context.Context) ([]web.UploadRow, error) {
+	entries, err := os.ReadDir(s.uploadDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	shadows, err := s.shadowMap()
+	if err != nil {
+		// Log and continue — shadow info is decorative, not load-
+		// bearing.
+		slog.Warn("shadow map walk failed; rows will lack shadow annotations", "err", err)
+		shadows = nil
+	}
+	var rows []web.UploadRow
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || name == ".gitkeep" || strings.HasPrefix(name, ".") {
+			continue
+		}
+		path := filepath.Join(s.uploadDir, name)
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		row := web.UploadRow{
+			Name: name,
+			Size: info.Size(),
+		}
+		// Determine load state. The loaded module's name is
+		// usually the basename (Tier 2 naming convention) but
+		// the store keys by module name, so we ask for it.
+		mod, mErr := s.store.GetModule(ctx, name)
+		switch {
+		case mErr == nil && mod != nil && mod.SourcePath == path:
+			row.State = "loaded"
+			row.Module = mod.Name
+			diags, _ := s.store.ListDiagnosticsByModule(ctx, mod.Name)
+			row.DiagCount = len(diags)
+		case mErr == nil && mod != nil && mod.SourcePath != path:
+			// Module loaded from elsewhere; this upload is on
+			// disk but didn't win ReplaceModule (load order or
+			// the file post-dates the last reload).
+			row.State = "loaded (shadowed)"
+			row.Module = mod.Name
+		default:
+			// Either the module is not in the store, or the
+			// store said something else weird. Sniff for the
+			// MIB marker to decide between parse-error and
+			// non-MIB.
+			ok, _ := mibcorpus.HasMIBOpener(path)
+			if ok {
+				row.State = "parse error"
+			} else {
+				row.State = "non-MIB skipped"
+			}
+		}
+		// Shadow annotation: this upload masks a corpus file with
+		// the same basename.
+		if rel, ok := shadows[name]; ok {
+			row.Shadows = rel
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// shadowMap builds a basename → corpus-relative path index of every
+// MIB-shaped file UNDER s.mibsDir but NOT under s.uploadDir. The
+// /upload page uses this to flag which uploads mask a curated
+// corpus file (the operator deserves to know: deleting the upload
+// entry will unload the module entirely, not "fall back" to the
+// corpus version automatically).
+func (s *Server) shadowMap() (map[string]string, error) {
+	out := make(map[string]string)
+	err := filepath.WalkDir(s.mibsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != s.mibsDir && (strings.HasPrefix(name, ".") || name == "LICENSES" || name == "upload") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		base := d.Name()
+		if strings.HasPrefix(base, ".") {
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(base)) {
+		case ".mib", ".txt", ".my", "":
+		default:
+			return nil
+		}
+		rel, err := filepath.Rel(s.mibsDir, path)
+		if err != nil {
+			return nil
+		}
+		out[base] = rel
+		return nil
+	})
+	return out, err
 }

@@ -3905,3 +3905,99 @@ main.page:has(.workspace-grid) .content-inner,
   font-size: 11px;
 }
 .drop-zone-replace:hover { border-color: var(--accent); }
+
+/* --- /upload management page ---------------------------------------- */
+
+.upload-page {
+  max-width: 80ch;
+  margin: 0 auto;
+}
+.upload-page h1 {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 8px;
+}
+.upload-page h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 24px 0 8px;
+  color: var(--fg-1);
+}
+.upload-tagline {
+  font-size: 14px;
+  color: var(--fg-2);
+  margin: 0 0 16px;
+}
+.upload-tagline code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.upload-empty {
+  color: var(--fg-3);
+  font-size: 13px;
+  padding: 12px 16px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+}
+.upload-empty code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.upload-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.upload-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 8px;
+  border-top: 1px solid var(--line-soft);
+}
+.upload-row:first-child { border-top: none; }
+.upload-row[data-state="parse error"]      { background: var(--bg-elev); }
+.upload-row[data-state="non-MIB skipped"]   { color: var(--fg-3); }
+.upload-row-name a { color: var(--fg-1); }
+.upload-row-name a:hover { color: var(--accent); }
+.upload-row-state {
+  font-size: 11px;
+  color: var(--fg-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.upload-row-size { color: var(--fg-3); }
+.upload-row-diags { color: var(--accent); }
+.upload-row-shadow {
+  color: var(--fg-3);
+  font-size: 11px;
+}
+.upload-row-shadow code {
+  background: var(--bg-elev);
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+.upload-row-delete {
+  background: var(--bg);
+  color: var(--fg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 1px 8px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.upload-row-delete:hover {
+  border-color: var(--line-strong);
+  color: var(--fg-1);
+}
