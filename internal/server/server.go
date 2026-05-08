@@ -10,14 +10,30 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/no42-org/blittermib/internal/model"
 	"github.com/no42-org/blittermib/internal/store"
 )
 
-// LoadFunc compiles + ingests one or more MIB files into the store.
-// Wired by the parent (cmd/blittermib) when uploads are enabled so
-// the upload handler can compile inline (per design.md D3) without
-// the internal/server package depending on the loader implementation.
-type LoadFunc func(ctx context.Context, paths []string) error
+// LoadOutcome is a per-file result of a synchronous compile + store
+// pass triggered by the upload handler. The handler folds these
+// into the JSON response so the operator sees parse status without a
+// follow-up request (per design.md D3). cmd/blittermib's loader is
+// responsible for populating these from compile.Result; the server
+// package never imports compile directly.
+type LoadOutcome struct {
+	Path        string
+	Module      *model.Module // nil when Err != nil
+	SymbolCount int
+	Diagnostics []model.Diagnostic
+	Err         error
+}
+
+// LoadFunc compiles + ingests one or more MIB files into the store
+// and returns one outcome per input path (in any order). Wired by
+// the parent (cmd/blittermib) via EnableUploads so the upload handler
+// can compile inline without the internal/server package depending
+// on the loader implementation.
+type LoadFunc func(ctx context.Context, paths []string) []LoadOutcome
 
 // Server is the blittermib HTTP server.
 type Server struct {

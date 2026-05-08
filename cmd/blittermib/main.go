@@ -164,7 +164,7 @@ func run(cfg config) error {
 	}()
 
 	srv := server.New(st, cfg.listen, version, cfg.mibsDir)
-	srv.EnableUploads(loader.loadFiles)
+	srv.EnableUploads(loader.loadFilesOutcomes)
 	err = srv.Start(ctx)
 	wg.Wait()
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/no42-org/blittermib/internal/compile"
 	"github.com/no42-org/blittermib/internal/mibcorpus"
 	"github.com/no42-org/blittermib/internal/model"
+	"github.com/no42-org/blittermib/internal/server"
 	"github.com/no42-org/blittermib/internal/store"
 )
 
@@ -47,8 +49,19 @@ func (l *loader) loadAll(ctx context.Context, dirs ...string) error {
 }
 
 // loadFiles compiles + stores a specific list of files. Used both
-// for the initial scan and for hot-reload from the watcher.
+// for the initial scan and for hot-reload from the watcher. Wraps
+// loadFilesOutcomes for callers that don't need per-file results.
 func (l *loader) loadFiles(ctx context.Context, files []string) error {
+	_ = l.loadFilesOutcomes(ctx, files)
+	return nil
+}
+
+// loadFilesOutcomes is the same compile+store pass as loadFiles, but
+// returns per-file outcomes shaped for the web upload handler (D3 —
+// sync compile, response carries module/OID/symbols/diagnostics).
+// Side effects on the store are identical; the only difference is
+// the structured return value.
+func (l *loader) loadFilesOutcomes(ctx context.Context, files []string) []server.LoadOutcome {
 	start := time.Now()
 	results := l.compiler.Compile(ctx, files)
 
@@ -68,33 +81,47 @@ func (l *loader) loadFiles(ctx context.Context, files []string) error {
 		refsByModule[ref.SourceModule] = append(refsByModule[ref.SourceModule], ref)
 	}
 
+	outcomes := make([]server.LoadOutcome, 0, len(results))
 	loaded, failed := 0, 0
 	for _, r := range results {
+		oc := server.LoadOutcome{
+			Path:        r.Target,
+			Module:      r.Module,
+			SymbolCount: len(r.Symbols),
+			Diagnostics: r.Diagnostics,
+		}
 		if r.Err != nil {
 			failed++
 			slog.Warn("compile failed", "target", r.Target, "err", r.Err)
+			oc.Err = r.Err
+			outcomes = append(outcomes, oc)
 			continue
 		}
 		if reason, ok := rejectReason(r); !ok {
 			failed++
 			slog.Warn("compile result rejected; skipping",
 				"target", r.Target, "reason", reason)
+			oc.Err = errors.New(reason)
+			outcomes = append(outcomes, oc)
 			continue
 		}
 		modRefs := refsByModule[r.Module.Name]
 		if err := l.store.ReplaceModule(ctx, r.Module, r.Symbols, modRefs, r.Diagnostics); err != nil {
 			failed++
 			slog.Warn("store replace failed", "module", r.Module.Name, "err", err)
+			oc.Err = err
+			outcomes = append(outcomes, oc)
 			continue
 		}
 		loaded++
+		outcomes = append(outcomes, oc)
 	}
 
 	slog.Info("mib load complete",
 		"loaded", loaded, "failed", failed,
 		"files", len(files), "duration", time.Since(start),
 	)
-	return nil
+	return outcomes
 }
 
 // rejectReason returns ("", true) when a compile result is fit to
