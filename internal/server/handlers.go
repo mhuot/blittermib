@@ -699,6 +699,7 @@ func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request, name, o
 		ModuleDownloadable: downloadable,
 		TypeDefs:           web.CollectTypeDefs(syms),
 		BundleFileCount:    bundleFileCount,
+		ModuleDeletable:    s.uploadsEnabled && mod.SourcePath != "" && filepath.Dir(mod.SourcePath) == s.uploadDir,
 	}
 
 	if selectionOID != "" {

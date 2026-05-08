@@ -475,6 +475,131 @@ func TestDeleteWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestModulePageInlineDeleteShown covers the 8c surface: when
+// uploads are enabled AND a module's source file resolves under
+// mibs/upload/, the module page renders an inline ✕ button.
+func TestModulePageInlineDeleteShown(t *testing.T) {
+	t.Setenv("BLITTERMIB_UPLOAD_ENABLED", "true")
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	mibsDir := t.TempDir()
+	uploadDir := filepath.Join(mibsDir, "upload")
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srcPath := filepath.Join(uploadDir, "MY-MIB")
+	if err := os.WriteFile(srcPath, []byte(minimalMIB), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReplaceModule(context.Background(),
+		&model.Module{
+			Name:        "MY-MIB",
+			SourcePath:  srcPath,
+			ParseStatus: model.ParseStatusClean,
+			Description: "test",
+		}, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(st, "", "test", mibsDir)
+	s.EnableUploads(noopLoad)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	body := getBody(t, ts.URL+"/m/MY-MIB")
+	if !strings.Contains(body, "module-info-delete") {
+		t.Errorf("module page missing module-info-delete button; excerpt:\n%s", excerpt(body, "module-info", 800))
+	}
+	if !strings.Contains(body, "Remove MY-MIB from mibs/upload/") {
+		t.Errorf("delete button title missing")
+	}
+}
+
+// TestModulePageInlineDeleteHiddenForCorpus covers the gate's
+// negative side: a module loaded from a corpus path (not under
+// upload/) gets no delete button even when uploads are enabled.
+func TestModulePageInlineDeleteHiddenForCorpus(t *testing.T) {
+	t.Setenv("BLITTERMIB_UPLOAD_ENABLED", "true")
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	mibsDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mibsDir, "ietf", "core"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(mibsDir, "upload"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	corpusPath := filepath.Join(mibsDir, "ietf", "core", "CORPUS-MIB")
+	if err := os.WriteFile(corpusPath, []byte(minimalMIB), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReplaceModule(context.Background(),
+		&model.Module{
+			Name:        "CORPUS-MIB",
+			SourcePath:  corpusPath,
+			ParseStatus: model.ParseStatusClean,
+			Description: "test",
+		}, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(st, "", "test", mibsDir)
+	s.EnableUploads(noopLoad)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	body := getBody(t, ts.URL+"/m/CORPUS-MIB")
+	if strings.Contains(body, "module-info-delete") {
+		t.Error("corpus-sourced module should not render module-info-delete")
+	}
+}
+
+// TestModulePageInlineDeleteHiddenWhenDisabled asserts the gate
+// hides the button when uploads are off, even if the source is
+// under upload/.
+func TestModulePageInlineDeleteHiddenWhenDisabled(t *testing.T) {
+	t.Setenv("BLITTERMIB_UPLOAD_ENABLED", "")
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	mibsDir := t.TempDir()
+	uploadDir := filepath.Join(mibsDir, "upload")
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srcPath := filepath.Join(uploadDir, "MY-MIB")
+	if err := os.WriteFile(srcPath, []byte(minimalMIB), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReplaceModule(context.Background(),
+		&model.Module{
+			Name:        "MY-MIB",
+			SourcePath:  srcPath,
+			ParseStatus: model.ParseStatusClean,
+			Description: "test",
+		}, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(st, "", "test", mibsDir)
+	s.EnableUploads(nil) // env off; LoadFunc nil → uploads disabled
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	body := getBody(t, ts.URL+"/m/MY-MIB")
+	if strings.Contains(body, "module-info-delete") {
+		t.Error("uploads disabled but module-info-delete still rendered")
+	}
+}
+
 // TestUploadIndexAllStates asserts every row state surfaces on the
 // /upload page: a loaded module, a parse-error entry, a non-MIB
 // entry, and a shadow annotation when an upload masks a corpus
