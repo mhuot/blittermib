@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/no42-org/blittermib/internal/mibcorpus"
 	"github.com/no42-org/blittermib/internal/model"
@@ -235,11 +236,54 @@ func (s *Server) processUploadPart(part interface {
 	return oc
 }
 
-// handleUploadDelete is wired in §3.
-
+// handleUploadDelete removes a single file from mibs/upload/. The
+// only accepted path shape is /api/v1/upload/<name> where <name>
+// passes ValidModuleName; anything escaping mibs/upload/ via
+// ../-style traversal or absolute paths is refused.
+//
+// On success, the watcher's debounced reload drops the corresponding
+// module from the store within ~250 ms (per the existing fsnotify
+// pipeline); we don't need to wire a synchronous unload here.
 func (s *Server) handleUploadDelete(w http.ResponseWriter, r *http.Request) {
-	// §3.1: validate name, traversal-guard, os.Remove, 204.
-	http.Error(w, "upload-delete handler not yet implemented", http.StatusNotImplemented)
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	const prefix = "/api/v1/upload/"
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		http.NotFound(w, r)
+		return
+	}
+	rawName := strings.TrimPrefix(r.URL.Path, prefix)
+	// URL-decoded by net/http during routing; defend against any
+	// surviving traversal characters by going through filepath.Base
+	// + ValidModuleName.
+	name := filepath.Base(rawName)
+	if name == "" || name == "." || name == ".." {
+		http.Error(w, "invalid name", http.StatusBadRequest)
+		return
+	}
+	if !mibcorpus.ValidModuleName.MatchString(name) {
+		http.Error(w, "invalid name", http.StatusBadRequest)
+		return
+	}
+	target := filepath.Join(s.uploadDir, name)
+	// Defence-in-depth: even after ValidModuleName, refuse anything
+	// that doesn't resolve to a child of s.uploadDir.
+	rel, err := filepath.Rel(s.uploadDir, target)
+	if err != nil || !filepath.IsLocal(rel) {
+		http.Error(w, "invalid name", http.StatusBadRequest)
+		return
+	}
+	if err := os.Remove(target); err != nil {
+		if os.IsNotExist(err) {
+			http.NotFound(w, r)
+			return
+		}
+		s.internalError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleUploadIndex(w http.ResponseWriter, r *http.Request) {

@@ -76,10 +76,14 @@ func TestRoutesGate(t *testing.T) {
 	t.Run("enabled", func(t *testing.T) {
 		t.Setenv("BLITTERMIB_UPLOAD_ENABLED", "true")
 		ts := newTestServerForUpload(t, noopLoad)
+		// GET /upload and POST /api/v1/upload don't return 404 when
+		// the routes are registered. (DELETE on a missing file does
+		// return 404 from the real handler too — TestDeleteSuccess
+		// covers route-registration for that path via the 204
+		// success path.)
 		for _, c := range []struct{ method, path string }{
 			{"GET", "/upload"},
 			{"POST", "/api/v1/upload"},
-			{"DELETE", "/api/v1/upload/X"},
 		} {
 			req, _ := http.NewRequest(c.method, ts.URL+c.path, nil)
 			resp, err := http.DefaultClient.Do(req)
@@ -396,6 +400,78 @@ func TestUploadBatchOneCallToLoadFiles(t *testing.T) {
 	}
 	if len(batchSizes) != 1 || batchSizes[0] != 3 {
 		t.Errorf("batchSizes = %v, want [3]", batchSizes)
+	}
+}
+
+// TestDeleteSuccess covers the happy path: an existing file in
+// upload/ is removed, the response is 204, and the file is gone
+// from disk.
+func TestDeleteSuccess(t *testing.T) {
+	t.Setenv("BLITTERMIB_UPLOAD_ENABLED", "true")
+	ts := newTestServerForUpload(t, fakeLoad("1.3.6.1.4.1.99999", 1, nil))
+	// Seed via the upload endpoint to land a file in the right
+	// directory without exposing internals.
+	if r, _ := postUpload(t, ts, "", map[string]string{"TEST-MIB": minimalMIB}); r.StatusCode != http.StatusOK {
+		t.Fatalf("seed upload: status %d", r.StatusCode)
+	}
+
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/upload/TEST-MIB", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", resp.StatusCode)
+	}
+
+	// A second delete must 404 (the file is gone).
+	req2, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/upload/TEST-MIB", nil)
+	resp2, _ := http.DefaultClient.Do(req2)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Errorf("second delete: status = %d, want 404", resp2.StatusCode)
+	}
+}
+
+// TestDeleteTraversalRefused asserts the path-traversal guard
+// rejects names that escape mibs/upload/ via ..-style fragments,
+// absolute paths, or characters that ValidModuleName rejects.
+func TestDeleteTraversalRefused(t *testing.T) {
+	t.Setenv("BLITTERMIB_UPLOAD_ENABLED", "true")
+	ts := newTestServerForUpload(t, noopLoad)
+	for _, name := range []string{
+		"%2E%2E%2Fcorpus%2FCISCO-SMI", // ../corpus/CISCO-SMI
+		"../etc/passwd",
+		"foo bar",
+		"foo;bar",
+	} {
+		req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/upload/"+name, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
+			t.Errorf("DELETE %q: status = %d, want 400 or 404", name, resp.StatusCode)
+		}
+	}
+}
+
+// TestDeleteWhenDisabled confirms the route 404s when uploads are
+// off (no DELETE handler registered, catch-all index handler
+// returns 404 for /api/v1/upload/X).
+func TestDeleteWhenDisabled(t *testing.T) {
+	t.Setenv("BLITTERMIB_UPLOAD_ENABLED", "")
+	ts := newTestServerForUpload(t, nil)
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/upload/TEST-MIB", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
 }
 
