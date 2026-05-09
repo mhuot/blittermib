@@ -250,6 +250,26 @@ by row IDs.
 If a reload fails (parse error), the previous version stays loaded
 and the failure shows on `/diagnostics`.
 
+### Non-UTF-8 MIB sources
+
+Vendor MIB files are commonly source-encoded in Latin-1 / Windows-1252
+(degree sign `0xb0`, micro sign `0xb5`) or contain stray ASCII control
+bytes (`0x08` backspace) inside DESCRIPTION strings. blittermib loads
+these modules anyway by transcoding the in-memory smidump output to
+UTF-8 before XML parsing, and attaches a warning diagnostic with code
+`non-utf8-source` to each recovered module. The diagnostic appears on
+`/diagnostics` and on the module page; the source file on disk is
+never modified. To silence the diagnostic, re-encode the source as
+UTF-8:
+
+```bash
+iconv -f latin1 -t utf-8 VENDOR-MIB > VENDOR-MIB.utf8 && mv VENDOR-MIB.utf8 VENDOR-MIB
+```
+
+Characters that lie in the Windows-1252-only band `0x80–0x9F` (smart
+quotes, em-dashes) may render slightly off until the source is
+re-encoded.
+
 ## Standard MIBs
 
 The IETF/IANA standard MIB collection ships in the corpus alongside

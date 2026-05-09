@@ -75,11 +75,55 @@ func (s *Smidump) run(ctx context.Context, target string) (*SMI, []model.Diagnos
 		return nil, diags, fmt.Errorf("smidump %s: %w: %s", target, err, stderrBuf.String())
 	}
 
-	smi, perr := ParseXML(&stdoutBuf)
+	smi, recovery, perr := parseSmidumpXMLWithRecovery(target, stdoutBuf.Bytes())
+	if recovery != nil {
+		diags = append(diags, *recovery)
+	}
 	if perr != nil {
-		return nil, diags, fmt.Errorf("parse smidump output for %s: %w", target, perr)
+		return nil, diags, perr
 	}
 	return smi, diags, nil
+}
+
+// parseSmidumpXMLWithRecovery decodes smidump's XML output and, on a
+// specific class of decoder failures (invalid UTF-8 / illegal character
+// code), runs sanitizeXMLBytes once and retries the decode.
+//
+// On clean inputs the function takes the fast path: exactly one
+// ParseXML call, no scan of the buffer, no recovery diagnostic.
+//
+// The recovery path exists because vendor MIBs in the wild commonly
+// source-encode in Latin-1 / Windows-1252 or carry stray ASCII C0
+// controls inside DESCRIPTION strings; smidump passes those bytes
+// through verbatim into its XML output and Go's encoding/xml correctly
+// refuses them. Sanitize-and-retry recovers the module and attaches a
+// warning Diagnostic so the operator can see at /diagnostics which
+// modules were fuzzed and re-encode the source if desired.
+//
+// On second-parse success, the returned recovery Diagnostic is non-nil
+// and the error is nil. On second-parse failure, the recovery
+// Diagnostic is nil and the error is the second-parse error wrapped
+// with the same prefix as the first-parse failure path.
+func parseSmidumpXMLWithRecovery(target string, raw []byte) (*SMI, *model.Diagnostic, error) {
+	smi, perr := ParseXML(bytes.NewReader(raw))
+	if perr == nil {
+		return smi, nil, nil
+	}
+	if !xmlNeedsSanitize(perr) {
+		return nil, nil, fmt.Errorf("parse smidump output for %s: %w", target, perr)
+	}
+	sanitized := sanitizeXMLBytes(raw)
+	smi, perr2 := ParseXML(bytes.NewReader(sanitized))
+	if perr2 != nil {
+		return nil, nil, fmt.Errorf("parse smidump output for %s: %w", target, perr2)
+	}
+	recovery := &model.Diagnostic{
+		File:     target,
+		Severity: model.SeverityWarning,
+		Code:     "non-utf8-source",
+		Message:  "MIB source is not valid UTF-8; characters in non-ASCII bands may render incorrectly. Re-encode the source as UTF-8 to silence this diagnostic.",
+	}
+	return smi, recovery, nil
 }
 
 // ParseXML decodes smidump's XML output from r.
