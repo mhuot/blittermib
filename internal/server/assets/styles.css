@@ -2137,15 +2137,15 @@ main.page:has(.workspace-grid) .content-inner,
 .list-controls .kind-chip.kind-scalar { --c: var(--c-gauge); }
 .list-controls .kind-chip.kind-table  { --c: var(--c-struct); }
 .list-controls .kind-chip.kind-notif  { --c: var(--c-notif); }
-.list-controls .list-scope-clear {
-  margin-left: 4px;
+/* "View all in module" lives on the scope-bar (not the filter-chip
+ * row); margin-left:auto from the base rule pushes it + the count to
+ * the right, with the breadcrumb on the left. */
+.list-scope-bar .list-scope-clear {
   font-family: var(--font-mono);
   font-feature-settings: 'liga' 0, 'calt' 0;
   font-size: 11px;
-  color: var(--fg-3);
   flex-shrink: 0;
 }
-.list-controls .list-scope-clear:hover { color: var(--accent); }
 
 /* Scope-bar — clickable breadcrumb path through the OID tree
  * (`axMgmt / axSystem / axSysCpu / axSysCpuTable`) with an
@@ -2156,7 +2156,6 @@ main.page:has(.workspace-grid) .content-inner,
 .list-scope-bar {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
   gap: 16px;
   padding: 6px 14px;
   background: var(--bg-elev);
@@ -4033,3 +4032,325 @@ main.page:has(.workspace-grid) .content-inner,
   border-color: var(--line-strong);
   color: var(--fg-1);
 }
+
+/* --- walk decoder ---------------------------------------------------- */
+
+.walk-upload textarea {
+  width: 100%;
+  min-height: 280px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 13px;
+  resize: vertical;
+}
+.walk-upload textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.walk-upload-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.walk-file { color: var(--fg-2); font-size: 13px; }
+.walk-hint { color: var(--fg-3); font-size: 13px; margin-top: 16px; }
+
+/* decode progress — indeterminate bar shown while the POST is in flight */
+.walk-progress {
+  display: none;
+  height: 3px;
+  margin-top: 12px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+}
+.walk-decoding .walk-progress { display: block; }
+.walk-progress-bar {
+  display: block;
+  height: 100%;
+  width: 35%;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: walk-progress-slide 1.05s ease-in-out infinite;
+}
+@keyframes walk-progress-slide {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(420%); }
+}
+.walk-decoding button[type="submit"] { pointer-events: none; opacity: 0.75; }
+/* Stable width + centered label so the "Decode" → "Decoding…" swap does
+ * not reflow the button (its `transition: all` would otherwise animate
+ * the width and ghost a second copy). user-select:none avoids the label
+ * being text-selected on click. */
+.walk-intake button[type="submit"] {
+  min-width: 6.5rem;
+  justify-content: center;
+  user-select: none;
+}
+.walk-error {
+  margin-top: 16px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--severity-red);
+  color: var(--severity-red);
+  background: color-mix(in oklch, var(--severity-red) 12%, transparent);
+}
+
+/* topbar "Decode SNMP Walk" control */
+.walk-decode-toggle {
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 13px;
+  text-decoration: none;
+  transition: all 100ms ease;
+}
+.walk-decode-toggle:hover { color: var(--fg); border-color: var(--line-strong); }
+
+/* decode modal — centered overlay carrying the shared intake form */
+.walk-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: color-mix(in oklch, var(--bg) 75%, transparent);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 10vh var(--gutter, 16px) var(--gutter, 16px);
+}
+.walk-modal[data-state="hidden"] { display: none; }
+.walk-modal-card {
+  width: 100%;
+  max-width: 680px;
+  max-height: 82vh;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.walk-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.walk-modal-head h2 { margin: 0; font-size: 15px; }
+.walk-modal-close {
+  border: 0;
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 4px 6px;
+}
+.walk-modal-close:hover { color: var(--fg); }
+.walk-modal .walk-intake { padding: 18px; overflow-y: auto; }
+.walk-modal .walk-intake textarea {
+  width: 100%;
+  min-height: 220px;
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 13px;
+  resize: vertical;
+}
+.walk-modal .walk-intake textarea:focus { outline: none; border-color: var(--accent); }
+
+/* drop zone — shared by the modal and the /walk page form */
+.walk-dropzone { position: relative; }
+.walk-dropzone[data-drag="over"] textarea {
+  border-color: var(--accent);
+  border-style: dashed;
+}
+.walk-dropzone-hint { margin: 6px 0 0; font-size: 12px; color: var(--fg-3); }
+
+/* results page — per-module summary launcher */
+.walk-modules { margin-top: 28px; }
+.walk-modules-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.walk-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.walk-sort-label {
+  color: var(--fg-3);
+  font-size: 12px;
+}
+.walk-sort-btn {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 12px;
+  color: var(--fg-3);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: all 80ms ease;
+}
+.walk-sort-btn:hover { color: var(--fg); border-color: var(--line-strong); }
+.walk-sort-btn[data-active="true"] {
+  color: var(--accent);
+  border-color: color-mix(in oklch, var(--accent) 45%, transparent);
+}
+.walk-sort-btn[data-dir="asc"]::after { content: " ↑"; }
+.walk-sort-btn[data-dir="desc"]::after { content: " ↓"; }
+.walk-modules-intro { color: var(--fg-3); font-size: 13px; margin: 4px 0 14px; }
+.walk-module-list { list-style: none; margin: 0; padding: 0; }
+.walk-module-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  transition: border-color 100ms ease;
+}
+.walk-module-row:hover { border-color: var(--line-strong); }
+.walk-module-link {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 14px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.walk-module-link:hover { text-decoration: underline; }
+.walk-module-counts { color: var(--fg-3); font-size: 13px; white-space: nowrap; }
+
+.walk-results-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+}
+.walk-summary { color: var(--fg-2); font-family: var(--font-mono); font-size: 13px; }
+.walk-results-actions { display: flex; align-items: center; gap: 16px; }
+.walk-back { color: var(--fg-3); font-size: 13px; }
+.walk-note { color: var(--fg-3); font-size: 13px; margin-top: 8px; }
+.walk-empty { color: var(--fg-2); margin-top: 24px; }
+
+.walk-group { margin-top: 28px; }
+.walk-group h2 { font-size: 15px; }
+.walk-group h2 a { color: var(--accent); text-decoration: none; }
+
+.walk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 10px;
+}
+.walk-table thead th {
+  text-align: left;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-3);
+  text-transform: uppercase;
+  letter-spacing: 0.10em;
+  padding: 8px 16px 8px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.walk-table tbody td {
+  padding: 8px 16px 8px 0;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: top;
+}
+.walk-oid, .walk-index, .walk-type {
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+}
+.walk-oid { color: var(--fg-3); }
+.walk-index { color: var(--c-index); }
+.walk-type { color: var(--fg-3); }
+.walk-value { color: var(--fg); }
+.walk-absent { color: var(--fg-4); font-style: italic; }
+
+.walk-notifications, .walk-unresolved { margin-top: 36px; }
+.walk-notifications h2 { color: var(--c-notif); font-size: 15px; }
+.walk-notif-intro, .walk-unresolved-intro {
+  color: var(--fg-3);
+  font-size: 13px;
+  max-width: 70ch;
+}
+
+/* Workspace overlay (walk-overlay.js): value badge on matched rows, the
+   "in walk" filter chip, and the status-bar indicator. All injected
+   client-side; absent when no walk is loaded. */
+.walk-val {
+  margin-left: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-feature-settings: 'liga' 0, 'calt' 0;
+  font-size: 11px;
+  white-space: nowrap;
+}
+/* The "in walk" chip hides non-matching rows. This ANDs with Alpine's
+   x-show: a row Alpine has hidden keeps its inline display:none; a row
+   Alpine shows has empty inline display, so this rule can hide it when
+   it is not in the walk. */
+#workspace-list.walk-only .list-row:not([data-in-walk="true"]) { display: none; }
+.kind-chip.kind-walk .dot { background: var(--c-index); }
+.kind-chip.kind-walk[data-walk-active="true"] {
+  border-color: var(--c-index);
+  color: var(--fg);
+}
+.walk-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--c-index);
+}
+.walk-indicator-label { color: var(--c-index); text-decoration: none; }
+.walk-clear {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--fg-3);
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+.walk-clear:hover { border-color: var(--line-strong); color: var(--fg-1); }

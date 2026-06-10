@@ -77,6 +77,10 @@ func newTestServer(t *testing.T) *httptest.Server {
 	}
 
 	s := New(st, "", "test", "/var/lib/blittermib/mibs")
+	// The walk decoder is opt-in (BLITTERMIB_WALK_DECODER_ENABLED); enable it so
+	// the shared test server exercises the /walk routes.
+	t.Setenv("BLITTERMIB_WALK_DECODER_ENABLED", "true")
+	s.EnableWalk()
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return ts
@@ -877,6 +881,56 @@ func TestWorkspaceScopeFilter(t *testing.T) {
 	// list-cell context).
 	if strings.Contains(scoped, `class="list-row t-struct" data-name="ifTable"`) {
 		t.Errorf("scoped list still includes the ifTable row above the scope")
+	}
+
+	// A scope that still encloses every module symbol (e.g. clicking a
+	// top-level scalar scopes to the module root) does NOT narrow the
+	// list, so the "View all in module" link is suppressed — otherwise
+	// it implies a narrowing that isn't there. ifTable encloses all
+	// seeded IF-MIB symbols.
+	resp, err = http.Get(ts.URL + "/m/IF-MIB/1.3.6.1.2.1.2.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enclosing := body(t, resp)
+	if strings.Contains(enclosing, "View all in module") {
+		t.Errorf("non-narrowing scope should not render the View-all-in-module link")
+	}
+}
+
+// No-OID symbols (TCs) can never pass the scope's OID-prefix filter, so
+// they must not count toward "the scope narrowed the list" — otherwise
+// every module that defines a TC shows the scope chrome at module-root
+// scope despite excluding no OID-bearing rows.
+func TestWorkspaceScopedIgnoresNoOIDSymbols(t *testing.T) {
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.ReplaceModule(context.Background(),
+		&model.Module{Name: "TC-MIB", OIDRoot: "1.3.6.1.4.1.99", ParseStatus: model.ParseStatusClean},
+		[]model.Symbol{
+			{ModuleName: "TC-MIB", Name: "tcRoot", OID: "1.3.6.1.4.1.99",
+				ParentOID: "1.3.6.1.4.1", Kind: model.KindObjectIdentity},
+			{ModuleName: "TC-MIB", Name: "tcScalar", OID: "1.3.6.1.4.1.99.1",
+				ParentOID: "1.3.6.1.4.1.99", Kind: model.KindScalar, Syntax: "Integer32"},
+			{ModuleName: "TC-MIB", Name: "MyConvention", OID: "",
+				Kind: model.KindTextualConvention, Syntax: "OCTET STRING"},
+		}, nil, nil); err != nil {
+		t.Fatalf("seed TC-MIB: %v", err)
+	}
+	s := New(st, "", "test", t.TempDir())
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/m/TC-MIB/1.3.6.1.4.1.99")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := body(t, resp)
+	if strings.Contains(html, "View all in module") {
+		t.Error("module-root scope excludes only the TC — scope chrome should be suppressed")
 	}
 }
 

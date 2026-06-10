@@ -1,0 +1,173 @@
+package web
+
+import "fmt"
+
+// walkIntakeForm is the shared capture-intake form: a paste textarea
+// wrapped in a drag-and-drop zone, a file picker, the decode submit,
+// and the privacy / size-cap copy. It posts multipart/form-data to
+// /walk/decode and is rendered by both the /walk page (WalkUpload) and
+// the global topbar modal (Base) so the two never drift. The
+// data-walk-* hooks are wired by walk-modal.js; without JS it degrades
+// to a plain textarea + file input.
+templ walkIntakeForm() {
+	<form method="post" action="/walk/decode" enctype="multipart/form-data" class="walk-intake">
+		<div class="walk-dropzone" data-walk-dropzone>
+			<textarea
+				name="walk"
+				rows="16"
+				spellcheck="false"
+				placeholder=".1.3.6.1.2.1.1.1.0 = STRING: &#34;Juniper Networks, Inc. srx340&#34;"
+			></textarea>
+			<p class="walk-dropzone-hint" aria-hidden="true">
+				Drop a <code>.txt</code> capture here, or paste above.
+			</p>
+		</div>
+		<div class="walk-upload-actions">
+			<label class="walk-file">
+				<span data-walk-file-label>Or upload a file:</span>
+				<input type="file" name="walkfile" accept=".txt,text/plain" data-walk-file-input/>
+			</label>
+			<button type="submit" class="module-info-download-btn primary">Decode</button>
+		</div>
+		<div class="walk-progress" aria-hidden="true"><span class="walk-progress-bar"></span></div>
+		<p class="walk-hint">
+			The walk is parsed in memory and never written to disk, logged, or
+			stored. Captures are capped at 10&nbsp;MB (roughly 70–100k OIDs); for
+			larger walks, filter or split before upload.
+		</p>
+	</form>
+}
+
+// WalkUpload renders the /walk capture intake page around the shared
+// walkIntakeForm. The accompanying copy states the privacy posture —
+// the walk is parsed in memory and never stored.
+templ WalkUpload(view WalkUploadView) {
+	@Base("Walk decoder — blittermib") {
+		<article class="walk-upload">
+			<h1>Decode an SNMP walk</h1>
+			<p>
+				Paste or upload an <code>snmpwalk -On</code> or
+				<code>snmpbulkwalk -On</code> capture. blittermib resolves each
+				OID against the loaded MIBs, groups the results by module, and
+				tells you which MIBs you need to make sense of the walk — plus
+				which of them define notifications and traps.
+			</p>
+			if view.Error != "" {
+				<p class="walk-error" role="alert">{ view.Error }</p>
+			}
+			@walkIntakeForm()
+		</article>
+	}
+}
+
+// WalkResults renders the decoded walk: a summary, resolved entries
+// grouped by module, the derived notification/trap module section, and
+// the unresolved-OID guidance. A form-POST downloads the bundle.
+templ WalkResults(view WalkResultsView) {
+	@Base("Walk results — blittermib") {
+		<!-- walk-overlay.js reads this on load and persists it to
+		sessionStorage so the workspace pages can decorate rows with
+		walk values. The attribute value is templ-escaped. -->
+		<div id="blittermib-walk-data" data-walk={ view.WalkDataJSON } hidden></div>
+		<article class="walk-results">
+			<header class="walk-results-head">
+				<h1>Walk results</h1>
+				<p class="walk-summary">{ view.Summary }</p>
+				<div class="walk-results-actions">
+					<a href="/walk" class="walk-back">Decode another walk</a>
+					if view.HasResults {
+						// multipart, not urlencoded: percent-encoding inflates a
+						// walk ~1.5-2× (every newline/=/: escapes), so a capture
+						// that decoded fine under the 10 MB cap would 413 here.
+						<form method="post" action="/walk/bundle" enctype="multipart/form-data">
+							<input type="hidden" name="walk" value={ view.WalkText }/>
+							<button type="submit" class="module-info-download-btn">↓ Download bundle</button>
+						</form>
+					}
+				</div>
+			</header>
+			if view.SkippedLines > 0 {
+				<p class="walk-note">{ skippedNote(view.SkippedLines) }</p>
+			}
+			for _, note := range view.ParserNotes {
+				<p class="walk-note">{ note }</p>
+			}
+			if !view.HasResults {
+				<p class="walk-empty">No OIDs in this capture resolved against the loaded MIBs.</p>
+			}
+			if len(view.Modules) > 0 {
+				<section class="walk-modules">
+					<div class="walk-modules-head">
+						<h2>MIBs in this walk</h2>
+						if len(view.Modules) > 1 {
+							<div class="walk-sort" data-walk-sort-controls role="group" aria-label="Sort MIBs">
+								<span class="walk-sort-label">Sort</span>
+								<button type="button" class="walk-sort-btn" data-walk-sort="module">name</button>
+								<button type="button" class="walk-sort-btn" data-walk-sort="values">values</button>
+							</div>
+						}
+					</div>
+					<p class="walk-modules-intro">
+						Open a module to explore the decoded values in the workspace,
+						filtered to the OIDs this walk touched.
+					</p>
+					<ul class="walk-module-list" data-walk-sortable>
+						for _, m := range view.Modules {
+							<li class="walk-module-row"
+								data-module={ m.Module }
+								data-objects={ fmt.Sprintf("%d", m.ObjectCount) }
+								data-values={ fmt.Sprintf("%d", m.ValueCount) }>
+								<a class="walk-module-link" href={ moduleWalkHref(m.Module) }>{ m.Module }</a>
+								<span class="walk-module-counts">{ m.Counts }</span>
+							</li>
+						}
+					</ul>
+				</section>
+			}
+			if len(view.Notifications) > 0 {
+				<section class="walk-notifications">
+					<h2>Notification &amp; trap MIBs</h2>
+					<p class="walk-notif-intro">
+						These modules — matched by the walk or pulled in through their
+						import closure — define notifications or traps. They are the
+						MIBs you would load to decode traps this device might send; a
+						walk never carries trap definitions, so this is derived from the
+						module set, not observed in the capture.
+					</p>
+					<ul class="walk-module-list">
+						for _, n := range view.Notifications {
+							<li class="walk-module-row">
+								<a class="walk-module-link" href={ moduleHref(n.Module) }>{ n.Module }</a>
+								<span class="walk-module-counts">{ n.Count }</span>
+							</li>
+						}
+					</ul>
+				</section>
+			}
+			if len(view.Unresolved) > 0 {
+				<section class="walk-unresolved">
+					<h2>Unresolved OIDs</h2>
+					<p class="walk-unresolved-intro">
+						No loaded module covers these OID prefixes. Where the OID lives
+						under a vendor enterprise, the PEN hint names the vendor whose
+						MIBs would decode it.
+					</p>
+					<table class="walk-table">
+						<thead>
+							<tr><th>OID prefix</th><th>Count</th><th>Hint</th></tr>
+						</thead>
+						<tbody>
+							for _, u := range view.Unresolved {
+								<tr>
+									<td class="walk-oid">{ u.OID }</td>
+									<td>{ countLabel(u.Count) }</td>
+									<td>{ u.Hint }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</section>
+			}
+		</article>
+	}
+}
