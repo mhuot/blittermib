@@ -11,6 +11,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/no42-org/blittermib/internal/correlate"
 	"github.com/no42-org/blittermib/internal/model"
 )
 
@@ -68,7 +69,15 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate reference position: %w", err)
 	}
-	return &Store{db: db}, nil
+	s := &Store{db: db}
+	// One-time: classify an already-ingested corpus whose relationship
+	// tables predate the feature (the boot sync skips unchanged MIBs, so
+	// ReplaceModule never runs for them).
+	if err := s.backfillRelationships(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("backfill relationships: %w", err)
+	}
+	return s, nil
 }
 
 // migrateSymbolKindSplit handles the one-shot Phase-2 migration:
@@ -340,6 +349,17 @@ func (s *Store) ReplaceModule(
 		}
 	}
 
+	// Derived: inferred notification relationships (Notification
+	// Intelligence). Best-effort enrichment computed from the symbols
+	// and refs we just inserted — a classifier fault must never abort a
+	// module's ingest (see classify's recover), and the rows were
+	// already cleared by the `DELETE FROM module` cascade above.
+	if rels := classify(ctx, mod.Name, syms, refs); len(rels) > 0 {
+		if err := writeRelationships(ctx, tx, mod.Name, rels); err != nil {
+			return err
+		}
+	}
+
 	if len(diags) > 0 {
 		insDiag, err := tx.PrepareContext(ctx, `
 			INSERT INTO diagnostic
@@ -363,6 +383,133 @@ func (s *Store) ReplaceModule(
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
+}
+
+// execer is the subset of *sql.Tx / *sql.DB writeRelationships needs,
+// so it works both inside ReplaceModule's transaction and the boot
+// backfill's per-module transaction.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// writeRelationships inserts a module's inferred relationships and their
+// clear→raise pair edges. Shared by ReplaceModule (per-ingest) and the
+// boot backfill.
+func writeRelationships(ctx context.Context, ex execer, module string, rels []correlate.Relationship) error {
+	for _, r := range rels {
+		if _, err := ex.ExecContext(ctx, `
+			INSERT INTO notification_relationship
+			    (module_name, notification_name, classification, confidence, evidence_json)
+			VALUES (?, ?, ?, ?, ?)`,
+			module, r.Notification, string(r.Class), string(r.Confidence), encodeEvidence(r.Evidence),
+		); err != nil {
+			return fmt.Errorf("insert relationship %s::%s: %w", module, r.Notification, err)
+		}
+		for _, raise := range r.Clears {
+			if _, err := ex.ExecContext(ctx, `
+				INSERT OR IGNORE INTO notification_pair (module_name, clear_name, raise_name)
+				VALUES (?, ?, ?)`, module, r.Notification, raise); err != nil {
+				return fmt.Errorf("insert pair %s::%s→%s: %w", module, r.Notification, raise, err)
+			}
+		}
+	}
+	return nil
+}
+
+// relationshipsBackfillVersion gates the one-time (re-)classification of
+// an already-ingested corpus. The notification_relationship tables are
+// populated on ReplaceModule (ingest), but a corpus cached by a build
+// that predates Notification Intelligence — or by any build, since the
+// boot sync skips unchanged MIBs — has empty (or stale) tables.
+//
+// Bump this whenever the correlate engine's output can change so that
+// already-backfilled DBs re-classify on the next boot instead of serving
+// a stale generation. (v2: re-run after the status-aware pairing /
+// confidence calibration so deprecated-duplicate handling is consistent.)
+const relationshipsBackfillVersion = 2
+
+// backfillRelationships classifies every already-stored module into the
+// relationship tables, once, when the cache predates the feature. It
+// re-runs the pure correlate.Classify over stored symbols/refs — no MIB
+// recompile — and is gated by PRAGMA user_version so it runs at most
+// once per generation.
+func (s *Store) backfillRelationships(ctx context.Context) error {
+	var ver int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&ver); err != nil {
+		return fmt.Errorf("read user_version: %w", err)
+	}
+	if ver >= relationshipsBackfillVersion {
+		return nil
+	}
+	mods, err := s.ListModules(ctx)
+	if err != nil {
+		return err
+	}
+	// Clear any prior generation up front so a version bump re-classifies
+	// cleanly: a module that no longer yields relationships must not keep
+	// stale rows (a per-module delete inside the loop would skip it).
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM notification_relationship`); err != nil {
+		return fmt.Errorf("clear relationships: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM notification_pair`); err != nil {
+		return fmt.Errorf("clear pairs: %w", err)
+	}
+	for i := range mods {
+		name := mods[i].Name
+		syms, err := s.ListSymbolsByModule(ctx, name)
+		if err != nil {
+			return err
+		}
+		refs, err := s.listReferencesByModule(ctx, name)
+		if err != nil {
+			return err
+		}
+		rels := classify(ctx, name, syms, refs)
+		if len(rels) == 0 {
+			continue
+		}
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if err := writeRelationships(ctx, tx, name, rels); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", relationshipsBackfillVersion)); err != nil {
+		return fmt.Errorf("set user_version: %w", err)
+	}
+	return nil
+}
+
+// classify runs correlate.Classify behind a recover guard. Inference
+// is best-effort enrichment, so a classifier panic is logged and
+// treated as "no relationships" rather than aborting the module's
+// ingest transaction (and thus blocking an otherwise-valid MIB).
+func classify(ctx context.Context, module string, syms []model.Symbol, refs []model.Reference) (rels []correlate.Relationship) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.WarnContext(ctx, "notification inference panicked; skipping module", "module", module, "panic", r)
+			rels = nil
+		}
+	}()
+	return correlate.Classify(syms, refs)
+}
+
+// encodeEvidence serializes an inference's evidence trail for the
+// notification_relationship.evidence_json column. A marshal failure
+// degrades to "{}" rather than failing the row (consistent with
+// encodeIndex/encodeEnumValues).
+func encodeEvidence(ev correlate.Evidence) string {
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
 
 func encodeIndex(cols []string) string {

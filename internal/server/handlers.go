@@ -16,6 +16,7 @@ import (
 
 	"github.com/a-h/templ"
 
+	"github.com/no42-org/blittermib/internal/correlate"
 	"github.com/no42-org/blittermib/internal/eventconf"
 	"github.com/no42-org/blittermib/internal/model"
 	"github.com/no42-org/blittermib/internal/source"
@@ -394,6 +395,51 @@ func (s *Server) handleModuleEvents(w http.ResponseWriter, r *http.Request, name
 		return
 	}
 
+	// Attach inferred relationships so the export can emit alarm-data —
+	// unless suppressed (?alarms=off) or below the High-confidence gate.
+	// Only High-confidence relationships emit alarm-data; lower-confidence
+	// inferences are exported as plain events (FR20, FR23).
+	if r.URL.Query().Get("alarms") != "off" {
+		rels, err := s.store.ListRelationships(r.Context(), name)
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		// Only High-confidence relationships emit alarm-data.
+		high := make(map[string]correlate.Relationship, len(rels))
+		for _, rel := range rels {
+			if rel.Confidence == correlate.ConfHigh {
+				high[rel.Notification] = rel
+			}
+		}
+		for i := range notifs {
+			rel, ok := high[notifs[i].Symbol.Name]
+			if !ok {
+				continue
+			}
+			er := eventconf.Relationship{
+				AlarmType: alarmType(rel.Class),
+				Provenance: fmt.Sprintf("Notification Intelligence: inferred %s — %s; confidence %s",
+					rel.Class, rel.Evidence.String(), rel.Confidence),
+			}
+			if rel.Class == correlate.ClassClear {
+				// Keep only raises that are themselves High, so the
+				// clear-key resolves to an emitted reduction-key. A clear
+				// with no High raise to resolve is exported as a plain
+				// event rather than a clear that clears nothing.
+				for _, raise := range rel.Clears {
+					if _, ok := high[raise]; ok {
+						er.Clears = append(er.Clears, raise)
+					}
+				}
+				if len(er.Clears) == 0 {
+					continue
+				}
+			}
+			notifs[i].Relationship = er
+		}
+	}
+
 	events := eventconf.FromModule(name, notifs, eventconf.Options{
 		UEIBase:         ueibase,
 		ForcePositional: forcePositional,
@@ -409,6 +455,20 @@ func (s *Server) handleModuleEvents(w http.ResponseWriter, r *http.Request, name
 	setAttachmentDisposition(w, name+".events.xml")
 	// #nosec G705 -- `out` is generated eventconf XML served as an application/xml attachment with X-Content-Type-Options: nosniff; it is never interpreted as HTML, so the taint-flagged write is not an XSS vector.
 	_, _ = w.Write(out)
+}
+
+// alarmType maps an inferred classification onto the OpenNMS
+// alarm-data/@alarm-type value, or "" when unclassified.
+func alarmType(c correlate.Classification) string {
+	switch c {
+	case correlate.ClassRaise:
+		return eventconf.AlarmTypeRaise
+	case correlate.ClassClear:
+		return eventconf.AlarmTypeClear
+	case correlate.ClassOrphan:
+		return eventconf.AlarmTypeNotification
+	}
+	return ""
 }
 
 // validUEIBase reports whether s is a plausible event UEI base — the
@@ -756,6 +816,19 @@ func (s *Server) buildWorkspaceView(ctx context.Context, mod *model.Module, syms
 		}
 	}
 
+	// Per-notification classifications for the inline list-row badges.
+	var relationships map[string]correlate.Relationship
+	if hasNotifications {
+		if rels, err := s.store.ListRelationships(ctx, name); err != nil {
+			slog.Warn("workspace: relationship lookup failed", "module", name, "err", err)
+		} else if len(rels) > 0 {
+			relationships = make(map[string]correlate.Relationship, len(rels))
+			for _, rel := range rels {
+				relationships[rel.Notification] = rel
+			}
+		}
+	}
+
 	return &web.WorkspaceView{
 		Module:             mod,
 		Counts:             counts,
@@ -768,6 +841,7 @@ func (s *Server) buildWorkspaceView(ctx context.Context, mod *model.Module, syms
 		TypeDefs:           web.CollectTypeDefs(syms),
 		BundleFileCount:    bundleFileCount,
 		HasNotifications:   hasNotifications,
+		Relationships:      relationships,
 	}, nil
 }
 
@@ -943,6 +1017,13 @@ func (s *Server) handleSymbolDisambiguation(w http.ResponseWriter, r *http.Reque
 // the two surfaces can't drift on the shared pieces.
 func (s *Server) buildSymbolView(ctx context.Context, sym *model.Symbol) (*web.SymbolView, error) {
 	v := &web.SymbolView{Symbol: sym}
+	if sym.Kind == model.KindNotificationType || sym.Kind == model.KindTrapType {
+		if rel, err := s.store.GetRelationship(ctx, sym.ModuleName, sym.Name); err == nil {
+			v.Relationship = rel
+		} else {
+			slog.WarnContext(ctx, "symbol view: relationship lookup failed", "module", sym.ModuleName, "name", sym.Name, "err", err)
+		}
+	}
 	v.Context = s.buildSymbolContext(ctx, sym)
 	if sym.Kind == model.KindTable {
 		v.Columns = s.buildTableColumns(ctx, sym)

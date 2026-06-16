@@ -2,7 +2,9 @@ package web
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/no42-org/blittermib/internal/correlate"
 	"github.com/no42-org/blittermib/internal/model"
 )
 
@@ -85,6 +87,12 @@ templ workspaceDetailSection(view *WorkspaceView) {
 templ WorkspacePartial(view *WorkspaceView, includeList bool) {
 	if includeList {
 		@workspaceListSection(view, true)
+	} else if view.Selected != nil && view.Selected.Relationship != nil {
+		// Case A re-renders only the detail pane, so keep the selected
+		// row's list badge in sync with a targeted out-of-band swap —
+		// the two panes can't then show different classification
+		// generations after a runtime re-classification.
+		@notificationBadgeIcon(*view.Selected.Relationship, view.Selected.Symbol.Name, true)
 	}
 	@workspaceDetailSection(view)
 }
@@ -882,6 +890,9 @@ templ workspaceList(view *WorkspaceView, rows []model.Symbol, selectedOID string
 					</td>
 					<td class="list-cell-name">
 						@copyToClipboardIcon(s.Name, "Copy name")
+						if rel, ok := view.Relationships[s.Name]; ok {
+							@notificationBadgeIcon(rel, s.Name, false)
+						}
 						<a
 							href={ rowURL }
 							data-nav
@@ -1048,6 +1059,20 @@ templ workspaceDetailBody(view *WorkspaceView, sv *SymbolView) {
 		}
 	</div>
 	<div class="detail-body">
+		if sv.Relationship != nil {
+			<div class="section-title">Alarm semantics</div>
+			<p class="rel-line">
+				@notificationBadge(*sv.Relationship)
+				if sv.Relationship.Class == correlate.ClassClear && len(sv.Relationship.Clears) > 0 {
+					<span class="rel-clears">resolves <code>{ strings.Join(sv.Relationship.Clears, ", ") }</code></span>
+				}
+				<span class="rel-conf">confidence: { string(sv.Relationship.Confidence) }</span>
+			</p>
+			<details class="rel-evidence">
+				<summary>Why was this inferred?</summary>
+				<p class="desc">{ sv.Relationship.Evidence.String() }</p>
+			</details>
+		}
 		if s.Description != "" {
 			<div class="section-title">Description</div>
 			<div class="desc">{ collapseWhitespace(s.Description) }</div>
