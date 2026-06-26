@@ -1135,7 +1135,7 @@ templ workspaceDetailBody(view *WorkspaceView, sv *SymbolView) {
 		if len(s.EnumValues) > 0 {
 			<div class="section-title">Enumeration</div>
 			<table class="enum-tbl">
-				<thead><tr><th>Value</th><th>Name</th></tr></thead>
+				<thead><tr><th scope="col">Value</th><th scope="col">Name</th></tr></thead>
 				<tbody>
 					for _, ev := range s.EnumValues {
 						<tr>

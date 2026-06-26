@@ -414,7 +414,7 @@ func symbolDetailBody(view *SymbolView) templ.Component {
 			}
 		}
 		if len(view.Columns) > 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, "<section class=\"section\"><h2 class=\"section-label\">Columns</h2><table class=\"toc-table\"><thead><tr><th>#</th><th>Column</th><th>Syntax</th><th>Access</th><th>Status</th></tr></thead> <tbody>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, "<section class=\"section\"><h2 class=\"section-label\">Columns</h2><table class=\"toc-table\"><thead><tr><th scope=\"col\">#</th><th scope=\"col\">Column</th><th scope=\"col\">Syntax</th><th scope=\"col\">Access</th><th scope=\"col\">Status</th></tr></thead> <tbody>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
