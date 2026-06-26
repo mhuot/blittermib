@@ -141,7 +141,7 @@ templ trapSimulatorModal() {
 				Verify the host before running it on a production network.
 			</p>
 
-			<p class="simulate-error" x-show="openError" x-text="openError"></p>
+			<p class="simulate-error" role="alert" x-show="openError" x-text="openError"></p>
 
 			<div class="simulate-section">
 				<fieldset class="simulate-fieldset">
@@ -257,7 +257,7 @@ templ trapSimulatorModal() {
 									placeholder="leave blank for auto-discovery"
 									x-on:input="validateEngineID()"/>
 							</label>
-							<span class="simulate-error" x-show="engineIDError" x-text="engineIDError"></span>
+							<span class="simulate-error" role="alert" x-show="engineIDError" x-text="engineIDError"></span>
 						</div>
 					</div>
 				</template>
@@ -291,7 +291,7 @@ templ trapSimulatorModal() {
 							<template x-if="col.syntax !== 'IpAddress' && col.syntax !== 'OCTET STRING' && col.syntax !== 'OBJECT IDENTIFIER' && col.syntax !== 'BITS' && col.syntax !== 'InetAddressType'">
 								<input type="number" x-model.number="col.value"/>
 							</template>
-							<span class="simulate-error simulate-column-error" x-show="validateColumn(col)" x-text="validateColumn(col)"></span>
+							<span class="simulate-error simulate-column-error" role="alert" x-show="validateColumn(col)" x-text="validateColumn(col)"></span>
 						</div>
 					</div>
 				</template>
@@ -358,7 +358,7 @@ templ trapSimulatorModal() {
 					<span x-show="!copied">Copy</span>
 					<span x-show="copied">Copied ✓</span>
 				</button>
-				<p class="simulate-error" x-show="copyError" x-text="copyError"></p>
+				<p class="simulate-error" role="alert" x-show="copyError" x-text="copyError"></p>
 			</div>
 
 			<p class="simulate-footer">
