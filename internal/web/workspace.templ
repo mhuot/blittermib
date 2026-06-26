@@ -144,12 +144,14 @@ templ trapSimulatorModal() {
 			<p class="simulate-error" x-show="openError" x-text="openError"></p>
 
 			<div class="simulate-section">
-				<label class="simulate-label">Version</label>
-				<div class="simulate-radio-row">
-					<label><input type="radio" x-model="version" value="v1"/> v1</label>
-					<label><input type="radio" x-model="version" value="v2c"/> v2c</label>
-					<label><input type="radio" x-model="version" value="v3"/> v3</label>
-				</div>
+				<fieldset class="simulate-fieldset">
+					<legend class="simulate-label">Version</legend>
+					<div class="simulate-radio-row">
+						<label><input type="radio" x-model="version" value="v1"/> v1</label>
+						<label><input type="radio" x-model="version" value="v2c"/> v2c</label>
+						<label><input type="radio" x-model="version" value="v3"/> v3</label>
+					</div>
+				</fieldset>
 			</div>
 
 			<div class="simulate-section">

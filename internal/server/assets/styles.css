@@ -3312,6 +3312,19 @@ main.page:has(.workspace-grid) .content-inner,
   color: var(--fg-3);
   font-weight: 600;
 }
+/* Radio group exposed as a fieldset/legend (WCAG 1.3.1) so the group
+ * name ties to its radios. Strip the UA fieldset chrome so it lays out
+ * exactly like the bare label + radio-row it replaced. */
+.simulate-fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.simulate-fieldset > legend.simulate-label {
+  padding: 0;
+  margin-bottom: 8px;
+}
 .simulate-radio-row {
   display: flex;
   gap: 16px;
