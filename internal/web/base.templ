@@ -56,6 +56,11 @@ templ Base(title string) {
 		// hx-history="false" skips the history snapshot entirely —
 		// see the htmx-config comment in <head>.
 		<body hx-history="false">
+			// Skip link: first focusable element so keyboard and
+			// screen-reader users can jump past the repeated topbar
+			// straight to the page content (WCAG 2.4.1 Bypass Blocks).
+			// Visually hidden until focused — see .skip-link in styles.css.
+			<a class="skip-link" href="#main">Skip to main content</a>
 			// Shared icon sprite. The clipboard glyph used to be inlined
 			// into every copy button — at two buttons per list row that
 			// alone was ~9 MB of repeated SVG on a 7,000-symbol module.
@@ -94,7 +99,7 @@ templ Base(title string) {
 					</button>
 				</div>
 			</header>
-			<main class="page">
+			<main class="page" id="main">
 				<div class="content-inner">
 					{ children... }
 				</div>

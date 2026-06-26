@@ -181,6 +181,41 @@
 *, *::before, *::after { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 
+/* Screen-reader-only utility: removes content from the visual layout
+ * while keeping it in the accessibility tree. Used for status/live
+ * regions that announce async updates without occupying space. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Skip link (WCAG 2.4.1): visually hidden until it receives keyboard
+ * focus, at which point it slides into the top-left so the user can
+ * jump straight to <main>. */
+.skip-link {
+  position: absolute;
+  left: 8px;
+  top: -48px;
+  z-index: 1000;
+  padding: 8px 14px;
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  transition: top 120ms ease;
+}
+.skip-link:focus {
+  top: 8px;
+  text-decoration: none;
+}
+
 /* Alpine x-cloak: hide elements that have not been processed by
  * Alpine yet. Without this rule the workspace's module-picker
  * modal flashes visible during the brief window before Alpine
