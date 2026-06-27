@@ -155,6 +155,49 @@ window.trapSimulator = (function () {
 	return function trapSimulator() {
 		return {
 			isOpen: false,
+			// Accessibility: trigger to refocus on close + focus-trap
+			// teardown handle while open (WCAG 2.4.3).
+			returnFocusTo: null,
+			trapOff: null,
+
+			// init wires focus management: on open, move focus into the
+			// modal and trap Tab inside it; on close, tear the trap down
+			// and return focus to the "Simulate" button that opened it.
+			init: function () {
+				this.$watch('isOpen', (open) => {
+					if (open) {
+						this.$nextTick(() => {
+							// Closed before this tick ran (e.g. Escape right
+							// after open): the else branch already fired with
+							// trapOff null, so bail rather than install a trap
+							// on the hidden modal and leak its keydown listener.
+							if (!this.isOpen) return;
+							var modal = this.$el.querySelector('.simulate-modal');
+							if (!modal) return;
+							// focusable() is visibility-filtered, so initial
+							// focus skips conditionally-hidden (x-show /
+							// display:none) fields — a plain querySelector
+							// could land on a hidden input where .focus() is
+							// a silent no-op, leaving focus outside the modal.
+							if (window.blitterA11y) {
+								var first = window.blitterA11y.focusable(modal)[0];
+								if (first) first.focus();
+								this.trapOff = window.blitterA11y.focusTrap(modal);
+							} else {
+								var fallback = modal.querySelector('input,select,textarea,button');
+								if (fallback) fallback.focus();
+							}
+						});
+					} else {
+						if (this.trapOff) { this.trapOff(); this.trapOff = null; }
+						var rt = this.returnFocusTo;
+						this.returnFocusTo = null;
+						if (rt && typeof rt.focus === 'function') {
+							try { rt.focus(); } catch (_) { /* node removed */ }
+						}
+					}
+				});
+			},
 			notif: { name: '', oid: '', module: '' },
 			// Default to scalar-only so a stale state can't bleed
 			// the raw-suffix UI into a fresh open() before the
@@ -200,6 +243,8 @@ window.trapSimulator = (function () {
 			copyError: '',
 
 			open: function () {
+				// Remember the "Simulate" trigger so close() can refocus it.
+				this.returnFocusTo = document.activeElement;
 				var ul = document.querySelector('.notify-objects');
 				if (!ul) {
 					// Surface to the user — without this signal the

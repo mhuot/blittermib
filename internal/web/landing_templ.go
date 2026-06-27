@@ -47,7 +47,7 @@ func Landing(modules, symbols int, uploadsEnabled bool) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"hero\"><h1 class=\"hero-brand\"><span class=\"brand-mark\" aria-hidden=\"true\"><span class=\"bar bar-1\"></span> <span class=\"bar bar-2\"></span> <span class=\"bar bar-3\"></span></span> <span class=\"brand-text\">blittermib<span class=\"brand-dot\">.</span></span></h1><p class=\"hero-tagline\">Browse SNMP MIBs, beautifully.</p><form class=\"hero-search\" action=\"/search\" method=\"get\" role=\"search\"><span class=\"prompt\" aria-hidden=\"true\">›</span> <input type=\"search\" name=\"q\" class=\"hero-search-input\" placeholder=\"Search symbols, OIDs, modules, descriptions&hellip;\" autocomplete=\"off\" autofocus aria-label=\"Search\" aria-controls=\"hero-results\"> <span class=\"kbd\" aria-hidden=\"true\">⌘K</span></form><ul class=\"hero-results\" id=\"hero-results\" data-state=\"hidden\" role=\"listbox\"></ul>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"hero\"><h1 class=\"hero-brand\"><span class=\"brand-mark\" aria-hidden=\"true\"><span class=\"bar bar-1\"></span> <span class=\"bar bar-2\"></span> <span class=\"bar bar-3\"></span></span> <span class=\"brand-text\">blittermib<span class=\"brand-dot\">.</span></span></h1><p class=\"hero-tagline\">Browse SNMP MIBs, beautifully.</p><form class=\"hero-search\" action=\"/search\" method=\"get\" role=\"search\"><span class=\"prompt\" aria-hidden=\"true\">›</span> <input type=\"search\" name=\"q\" class=\"hero-search-input\" placeholder=\"Search symbols, OIDs, modules, descriptions&hellip;\" autocomplete=\"off\" autofocus aria-label=\"Search\" role=\"combobox\" aria-expanded=\"false\" aria-autocomplete=\"list\" aria-controls=\"hero-results\"> <span class=\"kbd\" aria-hidden=\"true\">⌘K</span></form><ul class=\"hero-results\" id=\"hero-results\" data-state=\"hidden\" role=\"listbox\"></ul>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -64,7 +64,7 @@ func Landing(modules, symbols int, uploadsEnabled bool) templ.Component {
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", modules))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/landing.templ`, Line: 38, Col: 40}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/landing.templ`, Line: 41, Col: 40}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -77,7 +77,7 @@ func Landing(modules, symbols int, uploadsEnabled bool) templ.Component {
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", symbols))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/landing.templ`, Line: 40, Col: 40}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/landing.templ`, Line: 43, Col: 40}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 			if templ_7745c5c3_Err != nil {
@@ -143,7 +143,7 @@ func LandingEmpty(mibsDir string) templ.Component {
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(mibsDir)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/landing.templ`, Line: 66, Col: 19}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/landing.templ`, Line: 69, Col: 19}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
@@ -188,7 +188,7 @@ func DropZone() templ.Component {
 			templ_7745c5c3_Var8 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<div class=\"drop-zone\" x-data=\"dropZone()\" x-on:dragenter.prevent=\"onDragEnter()\" x-on:dragover.prevent=\"onDragOver()\" x-on:dragleave.prevent=\"onDragLeave($event)\" x-on:drop.prevent=\"onDrop($event)\" x-bind:data-state=\"state\"><div class=\"drop-zone-prompt\" x-show=\"state !== 'uploading'\"><span class=\"drop-zone-icon\" aria-hidden=\"true\">⤓</span><p class=\"drop-zone-headline\">Drop MIB files here, or <button type=\"button\" class=\"drop-zone-browse\" x-on:click=\"$refs.file.click()\">click to browse</button></p><p class=\"drop-zone-hint\"><code>.mib</code> · <code>.txt</code> · <code>.my</code> — files run through the import pipeline and are filed into the curated tree.</p></div><div class=\"drop-zone-progress\" x-show=\"state === 'uploading'\" x-cloak><p>Uploading <span x-text=\"filesInFlight\"></span>&hellip;</p></div><input type=\"file\" x-ref=\"file\" multiple accept=\".mib,.txt,.my\" x-on:change=\"onPick($event)\" hidden><ul class=\"drop-zone-results\" x-show=\"results.length > 0\" x-cloak><template x-for=\"r in results\" x-bind:key=\"r.name + ':' + r.ts\"><li x-bind:data-ok=\"r.ok ? 'true' : 'false'\"><span class=\"drop-zone-result-name\" x-text=\"r.name\"></span><template x-if=\"r.ok\"><span class=\"drop-zone-result-detail\"><a x-bind:href=\"'/m/' + encodeURIComponent(r.module)\" x-text=\"r.module + ' · ' + r.symbols + ' symbols'\"></a></span></template><template x-if=\"!r.ok\"><span class=\"drop-zone-result-detail\" x-text=\"r.error\"></span></template><template x-if=\"r.canReplace\"><button type=\"button\" class=\"drop-zone-replace\" x-on:click=\"replace(r)\">Replace</button></template></li></template></ul></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<div class=\"drop-zone\" x-data=\"dropZone()\" x-on:dragenter.prevent=\"onDragEnter()\" x-on:dragover.prevent=\"onDragOver()\" x-on:dragleave.prevent=\"onDragLeave($event)\" x-on:drop.prevent=\"onDrop($event)\" x-bind:data-state=\"state\"><div class=\"drop-zone-prompt\" x-show=\"state !== 'uploading'\"><span class=\"drop-zone-icon\" aria-hidden=\"true\">⤓</span><p class=\"drop-zone-headline\">Drop MIB files here, or <button type=\"button\" class=\"drop-zone-browse\" x-on:click=\"$refs.file.click()\">click to browse</button></p><p class=\"drop-zone-hint\"><code>.mib</code> · <code>.txt</code> · <code>.my</code> — files run through the import pipeline and are filed into the curated tree.</p></div><div class=\"drop-zone-progress\" role=\"status\" aria-live=\"polite\" x-show=\"state === 'uploading'\" x-cloak><p>Uploading <span x-text=\"filesInFlight\"></span>&hellip;</p></div><input type=\"file\" x-ref=\"file\" multiple accept=\".mib,.txt,.my\" x-on:change=\"onPick($event)\" hidden><div class=\"drop-zone-results-region\" role=\"status\" aria-live=\"polite\" x-show=\"results.length > 0\" x-cloak><ul class=\"drop-zone-results\"><template x-for=\"r in results\" x-bind:key=\"r.name + ':' + r.ts\"><li x-bind:data-ok=\"r.ok ? 'true' : 'false'\"><span class=\"drop-zone-result-name\" x-text=\"r.name\"></span><template x-if=\"r.ok\"><span class=\"drop-zone-result-detail\"><a x-bind:href=\"'/m/' + encodeURIComponent(r.module)\" x-text=\"r.module + ' · ' + r.symbols + ' symbols'\"></a></span></template><template x-if=\"!r.ok\"><span class=\"drop-zone-result-detail\" x-text=\"r.error\"></span></template><template x-if=\"r.canReplace\"><button type=\"button\" class=\"drop-zone-replace\" x-on:click=\"replace(r)\">Replace</button></template></li></template></ul></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

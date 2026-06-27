@@ -416,7 +416,7 @@ func WalkResults(view WalkResultsView) templ.Component {
 				}
 			}
 			if len(view.Unresolved) > 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 34, "<section class=\"walk-unresolved\"><h2>Unresolved OIDs</h2><p class=\"walk-unresolved-intro\">No loaded module covers these OID prefixes. Where the OID lives under a vendor enterprise, the PEN hint names the vendor whose MIBs would decode it.</p><table class=\"walk-table\"><thead><tr><th>OID prefix</th><th>Count</th><th>Hint</th></tr></thead> <tbody>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 34, "<section class=\"walk-unresolved\"><h2>Unresolved OIDs</h2><p class=\"walk-unresolved-intro\">No loaded module covers these OID prefixes. Where the OID lives under a vendor enterprise, the PEN hint names the vendor whose MIBs would decode it.</p><table class=\"walk-table\"><thead><tr><th scope=\"col\">OID prefix</th><th scope=\"col\">Count</th><th scope=\"col\">Hint</th></tr></thead> <tbody>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

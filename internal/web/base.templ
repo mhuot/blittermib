@@ -38,6 +38,7 @@ templ Base(title string) {
 				} catch (e) {}
 			</script>
 			<link rel="stylesheet" href={ assetURL("styles.css") }/>
+			<script src={ string(assetURL("a11y.js")) } defer></script>
 			<script src={ string(assetURL("htmx.min.js")) } defer></script>
 			<script src={ string(assetURL("theme.js")) } defer></script>
 			<script src={ string(assetURL("palette.js")) } defer></script>
@@ -56,6 +57,11 @@ templ Base(title string) {
 		// hx-history="false" skips the history snapshot entirely —
 		// see the htmx-config comment in <head>.
 		<body hx-history="false">
+			// Skip link: first focusable element so keyboard and
+			// screen-reader users can jump past the repeated topbar
+			// straight to the page content (WCAG 2.4.1 Bypass Blocks).
+			// Visually hidden until focused — see .skip-link in styles.css.
+			<a class="skip-link" href="#main">Skip to main content</a>
 			// Shared icon sprite. The clipboard glyph used to be inlined
 			// into every copy button — at two buttons per list row that
 			// alone was ~9 MB of repeated SVG on a 7,000-symbol module.
@@ -94,7 +100,10 @@ templ Base(title string) {
 					</button>
 				</div>
 			</header>
-			<main class="page">
+			// tabindex="-1" makes the bypass target programmatically
+			// focusable so activating the skip link actually moves focus
+			// here, not just the scroll position (WCAG 2.4.1).
+			<main class="page" id="main" tabindex="-1">
 				<div class="content-inner">
 					{ children... }
 				</div>
@@ -111,7 +120,7 @@ templ Base(title string) {
 				</span>
 			</footer>
 			if walkEnabled && !isWalkPage(ctx) {
-				<div class="walk-modal" data-walk-modal data-state="hidden" role="dialog" aria-label="Decode SNMP walk">
+				<div class="walk-modal" data-walk-modal data-state="hidden" role="dialog" aria-modal="true" aria-label="Decode SNMP walk">
 					<div class="walk-modal-card">
 						<header class="walk-modal-head">
 							<h2>Decode an SNMP walk</h2>

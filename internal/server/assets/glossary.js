@@ -63,6 +63,11 @@
 	};
 
 	let seen = null;
+	// The .glossary element whose popover is currently open (null if
+	// none) — tracked so we can sync its aria-expanded / aria-describedby
+	// and so click/Enter on the same trigger toggles it closed.
+	let openTrigger = null;
+	let popoverSeq = 0;
 
 	function loadSeen() {
 		if (seen !== null) return seen;
@@ -107,6 +112,26 @@
 
 	function closeAllPopovers() {
 		document.querySelectorAll('.glossary-popover').forEach((el) => el.remove());
+		if (openTrigger) {
+			openTrigger.setAttribute('aria-expanded', 'false');
+			openTrigger.removeAttribute('aria-describedby');
+			openTrigger = null;
+		}
+	}
+
+	// enhanceTriggers makes every defined .glossary term keyboard
+	// operable (WCAG 2.1.1): a button-role, Tab-reachable control that
+	// reflects open state. Terms with no definition are left as plain
+	// inline text. Idempotent — safe to re-run after htmx swaps.
+	function enhanceTriggers() {
+		document.querySelectorAll('.glossary').forEach((el) => {
+			if (el.dataset.glossaryKbd === '1') return;
+			if (!definitionFor(termFromElement(el))) return;
+			el.dataset.glossaryKbd = '1';
+			el.setAttribute('role', 'button');
+			el.setAttribute('tabindex', '0');
+			el.setAttribute('aria-expanded', 'false');
+		});
 	}
 
 	function applySeenStyling() {
@@ -124,12 +149,23 @@
 
 		const pop = document.createElement('div');
 		pop.className = 'glossary-popover';
+		// role="tooltip" + aria-describedby ties the definition to the
+		// trigger, so a screen reader announces it while focus stays on
+		// the term (WCAG 1.3.1/4.1.2). Focus is intentionally not moved
+		// into the popover — it's supplementary, dismissed via Escape.
+		const popId = 'glossary-pop-' + (++popoverSeq);
+		pop.id = popId;
+		pop.setAttribute('role', 'tooltip');
 		pop.innerHTML =
 			'<span class="glossary-term"></span><span class="glossary-def"></span>';
 		pop.querySelector('.glossary-term').textContent = term;
 		pop.querySelector('.glossary-def').textContent = definition;
 
 		document.body.appendChild(pop);
+
+		el.setAttribute('aria-describedby', popId);
+		el.setAttribute('aria-expanded', 'true');
+		openTrigger = el;
 
 		const rect = el.getBoundingClientRect();
 		const popRect = pop.getBoundingClientRect();
@@ -147,13 +183,13 @@
 		applySeenStyling();
 	}
 
-	function onClick(e) {
-		const el = e.target.closest('.glossary');
-		if (!el) {
+	// toggleFor opens the term's popover, or closes it if it's already
+	// the open one (so click/Enter on the same trigger toggles).
+	function toggleFor(el) {
+		if (el === openTrigger) {
 			closeAllPopovers();
 			return;
 		}
-		e.preventDefault();
 		const term = termFromElement(el);
 		const def = definitionFor(term);
 		if (!def) {
@@ -163,21 +199,48 @@
 		showPopover(el, term, def);
 	}
 
+	function onClick(e) {
+		const el = e.target.closest('.glossary');
+		if (!el) {
+			closeAllPopovers();
+			return;
+		}
+		e.preventDefault();
+		toggleFor(el);
+	}
+
 	function onKey(e) {
-		if (e.key === 'Escape') closeAllPopovers();
+		if (e.key === 'Escape') {
+			const trigger = openTrigger;
+			closeAllPopovers();
+			// Return focus to the trigger so keyboard users aren't dropped.
+			if (trigger && typeof trigger.focus === 'function') {
+				try { trigger.focus(); } catch (_) { /* node removed */ }
+			}
+			return;
+		}
+		// Enter / Space activate the focused term (WCAG 2.1.1).
+		const el = e.target.closest && e.target.closest('.glossary');
+		if (!el) return;
+		if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+			e.preventDefault();
+			toggleFor(el);
+		}
 	}
 
 	function init() {
 		applySeenStyling();
+		enhanceTriggers();
 		document.addEventListener('click', onClick);
 		document.addEventListener('keydown', onKey);
 		window.addEventListener('scroll', closeAllPopovers, { passive: true });
 		// htmx partial swaps can bring in new .glossary elements that
-		// haven't been styled yet — re-run applySeenStyling on every
-		// swap, and close any popover anchored to swapped-out content.
+		// haven't been styled/enhanced yet — re-run on every swap, and
+		// close any popover anchored to swapped-out content.
 		document.body.addEventListener('htmx:afterSwap', () => {
 			closeAllPopovers();
 			applySeenStyling();
+			enhanceTriggers();
 		});
 	}
 
