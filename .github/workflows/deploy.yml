@@ -22,9 +22,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history + tags so `git describe` yields a real version
+          # (e.g. v0.15.1-3-gf321e42) instead of the compose `dev` default.
+          fetch-depth: 0
 
       - name: Build and start container
-        run: docker compose up -d --build
+        run: |
+          BLITTERMIB_VERSION="$(git describe --tags --always --dirty)"
+          export BLITTERMIB_VERSION
+          echo "Building blittermib ${BLITTERMIB_VERSION}"
+          docker compose up -d --build
 
       - name: Smoke test (/readyz)
         run: |
