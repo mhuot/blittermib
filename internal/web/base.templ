@@ -99,7 +99,10 @@ templ Base(title string) {
 					</button>
 				</div>
 			</header>
-			<main class="page" id="main">
+			// tabindex="-1" makes the bypass target programmatically
+			// focusable so activating the skip link actually moves focus
+			// here, not just the scroll position (WCAG 2.4.1).
+			<main class="page" id="main" tabindex="-1">
 				<div class="content-inner">
 					{ children... }
 				</div>

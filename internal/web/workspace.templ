@@ -257,7 +257,7 @@ templ trapSimulatorModal() {
 									placeholder="leave blank for auto-discovery"
 									x-on:input="validateEngineID()"/>
 							</label>
-							<span class="simulate-error" role="alert" x-show="engineIDError" x-text="engineIDError"></span>
+							<span class="simulate-error" role="status" x-show="engineIDError" x-text="engineIDError"></span>
 						</div>
 					</div>
 				</template>
@@ -291,7 +291,7 @@ templ trapSimulatorModal() {
 							<template x-if="col.syntax !== 'IpAddress' && col.syntax !== 'OCTET STRING' && col.syntax !== 'OBJECT IDENTIFIER' && col.syntax !== 'BITS' && col.syntax !== 'InetAddressType'">
 								<input type="number" x-model.number="col.value"/>
 							</template>
-							<span class="simulate-error simulate-column-error" role="alert" x-show="validateColumn(col)" x-text="validateColumn(col)"></span>
+							<span class="simulate-error simulate-column-error" role="status" x-show="validateColumn(col)" x-text="validateColumn(col)"></span>
 						</div>
 					</div>
 				</template>
