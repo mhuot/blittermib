@@ -1,0 +1,22 @@
+# compose.override.yml — self-host deployment overlay (mhuot fork).
+#
+# Auto-merged on top of compose.yml by `docker compose`. Kept separate
+# so the upstream compose.yml stays untouched and fork syncs from
+# no42-org/blittermib never conflict here.
+#
+# It puts blittermib behind the host's nginx-director reverse proxy:
+# the proxy reaches the container by name over the shared external
+# network, so no host port needs publishing.
+services:
+  blittermib:
+    # Stable name nginx-director's upstream block proxies to.
+    container_name: blittermib
+    # Reached as http://blittermib:8080 on the proxy network; drop the
+    # example's host port publish so nothing binds the host's :8080.
+    ports: !reset []
+    networks:
+      - nginx-proxy-network
+
+networks:
+  nginx-proxy-network:
+    external: true

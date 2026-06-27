@@ -1,0 +1,43 @@
+name: Deploy
+
+# Continuous deployment to the self-hosted host behind nginx-director.
+# Runs on the host's self-hosted runner (label: blittermib), which
+# builds the image from this fork and (re)starts the container. The
+# named data volume and ./import intake persist across deploys.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-blittermib
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, blittermib]
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and start container
+        run: docker compose up -d --build
+
+      - name: Smoke test (/readyz)
+        run: |
+          for i in $(seq 1 60); do
+            if docker exec blittermib wget -qO- http://127.0.0.1:8080/readyz >/dev/null 2>&1; then
+              echo "blittermib is ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "readyz did not come up within timeout" >&2
+          exit 1
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose logs --tail=120 blittermib
