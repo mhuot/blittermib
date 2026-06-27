@@ -1212,6 +1212,14 @@ button { font-family: inherit; }
 .tree-expand:hover { color: var(--fg); }
 .tree-expand:disabled { color: var(--fg-4); cursor: default; }
 .tree-expand:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+/* The OID-tree island's treeitem is the focusable unit (roving
+ * tabindex); ring just the row, not the nested child group. */
+.tree-node:focus-visible { outline: none; }
+.tree-node:focus-visible > .tree-row {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
 
 .tree-num {
   color: var(--fg-3);

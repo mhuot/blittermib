@@ -54,12 +54,35 @@ window.picker = (function () {
 			// walk trigger into a later module-button open.
 			walkScope: null,
 			currentModule: '',
+			// Accessibility: element to return focus to on close, and the
+			// focus-trap teardown handle while open (WCAG 2.4.3).
+			returnFocusTo: null,
+			trapOff: null,
 
 			init: function () {
 				this.modules = loadModules();
 				this.$watch('query', () => {
 					this.active = 0;
 					if (this.$refs.list) this.$refs.list.scrollTop = 0;
+				});
+				// Trap Tab within the card while open; on close, tear the
+				// trap down and return focus to whatever opened the picker.
+				this.$watch('open', (isOpen) => {
+					if (isOpen) {
+						this.$nextTick(() => {
+							var card = this.$el.querySelector('.module-picker-card');
+							if (card && window.blitterA11y) {
+								this.trapOff = window.blitterA11y.focusTrap(card);
+							}
+						});
+					} else {
+						if (this.trapOff) { this.trapOff(); this.trapOff = null; }
+						var rt = this.returnFocusTo;
+						this.returnFocusTo = null;
+						if (rt && typeof rt.focus === 'function') {
+							try { rt.focus(); } catch (_) { /* node removed */ }
+						}
+					}
 				});
 				// Arrow / Enter navigation only fires while the
 				// overlay is open and the input has focus.
@@ -97,6 +120,9 @@ window.picker = (function () {
 				this.walkScope = ws;
 				this.currentModule = currentModuleName();
 				this.active = 0;
+				// Remember the trigger (status-bar module button / walk
+				// indicator) so close() can return focus to it.
+				this.returnFocusTo = document.activeElement;
 				this.open = true;
 				this.$nextTick(() => this.$refs.input.focus());
 			},

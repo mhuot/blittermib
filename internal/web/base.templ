@@ -38,6 +38,7 @@ templ Base(title string) {
 				} catch (e) {}
 			</script>
 			<link rel="stylesheet" href={ assetURL("styles.css") }/>
+			<script src={ string(assetURL("a11y.js")) } defer></script>
 			<script src={ string(assetURL("htmx.min.js")) } defer></script>
 			<script src={ string(assetURL("theme.js")) } defer></script>
 			<script src={ string(assetURL("palette.js")) } defer></script>
@@ -119,7 +120,7 @@ templ Base(title string) {
 				</span>
 			</footer>
 			if walkEnabled && !isWalkPage(ctx) {
-				<div class="walk-modal" data-walk-modal data-state="hidden" role="dialog" aria-label="Decode SNMP walk">
+				<div class="walk-modal" data-walk-modal data-state="hidden" role="dialog" aria-modal="true" aria-label="Decode SNMP walk">
 					<div class="walk-modal-card">
 						<header class="walk-modal-head">
 							<h2>Decode an SNMP walk</h2>

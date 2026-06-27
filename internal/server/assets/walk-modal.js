@@ -23,6 +23,9 @@
 
 	var modal = null;
 	var returnFocusTo = null;
+	// Teardown handle for the active focus trap (window.blitterA11y) —
+	// null while the modal is closed.
+	var trapOff = null;
 
 	function open(trigger) {
 		if (!modal) return;
@@ -31,11 +34,15 @@
 		modal.dataset.state = 'visible';
 		var ta = modal.querySelector('textarea[name="walk"]');
 		if (ta) ta.focus();
+		// Trap Tab within the dialog (WCAG 2.4.3). Focus return is handled
+		// in close(), so the trap only manages cycling here.
+		if (window.blitterA11y) trapOff = window.blitterA11y.focusTrap(modal);
 	}
 
 	function close() {
 		if (!modal || modal.dataset.state !== 'visible') return;
 		modal.dataset.state = 'hidden';
+		if (trapOff) { trapOff(); trapOff = null; }
 		if (returnFocusTo) {
 			returnFocusTo.setAttribute('aria-expanded', 'false');
 			if (typeof returnFocusTo.focus === 'function') returnFocusTo.focus();

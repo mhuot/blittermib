@@ -19,7 +19,7 @@
 
 	const TEMPLATE = `
 <div class="palette-overlay" data-state="hidden" role="dialog" aria-modal="true" aria-labelledby="palette-input">
-	<div class="palette" role="combobox" aria-expanded="false">
+	<div class="palette">
 		<input
 			type="text"
 			class="palette-input"
@@ -27,6 +27,9 @@
 			placeholder="Search symbols, OIDs, modules…"
 			autocomplete="off"
 			spellcheck="false"
+			role="combobox"
+			aria-expanded="false"
+			aria-autocomplete="list"
 			aria-controls="palette-results"
 		/>
 		<ul class="palette-results" id="palette-results" role="listbox"></ul>
@@ -67,6 +70,21 @@
 			active: -1,
 		};
 
+		// optId is the DOM id of the i-th option — itemClass keeps the
+		// palette and hero option ids from colliding on the landing page.
+		function optId(i) {
+			return opts.itemClass + '-opt-' + i;
+		}
+
+		// setExpanded reflects listbox visibility on the combobox element
+		// (4.1.2). opts.combobox is the role="combobox" host: the palette
+		// wrapper for the modal, the input itself for the hero search.
+		function setExpanded(on) {
+			if (opts.combobox) {
+				opts.combobox.setAttribute('aria-expanded', on ? 'true' : 'false');
+			}
+		}
+
 		function updateActive() {
 			const items = opts.list.querySelectorAll('.' + opts.itemClass);
 			items.forEach((el, i) => {
@@ -75,19 +93,28 @@
 				el.setAttribute('aria-selected', on ? 'true' : 'false');
 				if (on) el.scrollIntoView({ block: 'nearest' });
 			});
+			// Point the focused input at the active option so screen
+			// readers announce the arrowed selection (4.1.2).
+			if (ctl.active >= 0) {
+				opts.input.setAttribute('aria-activedescendant', optId(ctl.active));
+			} else {
+				opts.input.removeAttribute('aria-activedescendant');
+			}
 		}
 
 		function render() {
 			if (ctl.hits.length === 0) {
 				opts.list.innerHTML = '';
 				ctl.active = -1;
+				opts.input.removeAttribute('aria-activedescendant');
+				setExpanded(false);
 				opts.onRender(ctl);
 				return;
 			}
 			opts.list.innerHTML = ctl.hits
 				.map(
 					(h, i) => `
-<li class="${opts.itemClass}" data-idx="${i}" role="option" aria-selected="${i === 0}">
+<li class="${opts.itemClass}" id="${optId(i)}" data-idx="${i}" role="option" aria-selected="${i === 0}">
 	<span class="palette-name">${escape(h.Name)}</span>
 	<span class="palette-oid">${escape(h.OID)}</span>
 	<span class="palette-meta">${escape(h.Module)} · ${escape(h.Kind)}</span>
@@ -95,6 +122,7 @@
 				)
 				.join('');
 			ctl.active = 0;
+			setExpanded(true);
 			opts.onRender(ctl);
 			updateActive();
 		}
@@ -153,6 +181,8 @@
 			ctl.hits = [];
 			ctl.active = -1;
 			opts.list.innerHTML = '';
+			opts.input.removeAttribute('aria-activedescendant');
+			setExpanded(false);
 		};
 
 		opts.input.addEventListener('input', () => {
@@ -287,6 +317,10 @@
 		modalCtl = searchController({
 			input,
 			list,
+			// combobox role/state belong on the focused input itself (the
+			// element that carries aria-activedescendant), per the APG
+			// combobox pattern — same wiring as the hero search below.
+			combobox: input,
 			itemClass: 'palette-item',
 			warnLabel: 'palette search failed',
 			beforeNavigate: hide,
@@ -330,6 +364,7 @@
 		const ctl = searchController({
 			input: ls,
 			list: dropdown,
+			combobox: ls,
 			itemClass: 'hero-result',
 			warnLabel: 'hero search failed',
 			onRender(c) {
