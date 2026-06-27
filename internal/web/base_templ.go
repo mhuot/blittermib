@@ -242,7 +242,7 @@ func Base(title string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "\" defer></script></head><body hx-history=\"false\"><svg xmlns=\"http://www.w3.org/2000/svg\" style=\"display:none\" aria-hidden=\"true\"><symbol id=\"icon-copy\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"9\" y=\"2\" width=\"6\" height=\"4\" rx=\"1\"></rect> <path d=\"M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2\"></path></symbol></svg><header class=\"topbar\"><a href=\"/\" class=\"brand\"><span class=\"brand-mark\" aria-hidden=\"true\"><span class=\"bar bar-1\"></span> <span class=\"bar bar-2\"></span> <span class=\"bar bar-3\"></span></span> <span class=\"brand-text\">blittermib<span class=\"brand-dot\">.</span></span></a> <span class=\"brand-tagline\">Pixelperfect MIB browser</span><div class=\"topbar-spacer\"></div><div class=\"topbar-end\"><span class=\"privacy-notice\">Self-hosted — your MIBs never leave your server.</span> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "\" defer></script></head><body hx-history=\"false\"><a class=\"skip-link\" href=\"#main\">Skip to main content</a><svg xmlns=\"http://www.w3.org/2000/svg\" style=\"display:none\" aria-hidden=\"true\"><symbol id=\"icon-copy\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"9\" y=\"2\" width=\"6\" height=\"4\" rx=\"1\"></rect> <path d=\"M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2\"></path></symbol></svg><header class=\"topbar\"><a href=\"/\" class=\"brand\"><span class=\"brand-mark\" aria-hidden=\"true\"><span class=\"bar bar-1\"></span> <span class=\"bar bar-2\"></span> <span class=\"bar bar-3\"></span></span> <span class=\"brand-text\">blittermib<span class=\"brand-dot\">.</span></span></a> <span class=\"brand-tagline\">Pixelperfect MIB browser</span><div class=\"topbar-spacer\"></div><div class=\"topbar-end\"><span class=\"privacy-notice\">Self-hosted — your MIBs never leave your server.</span> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -252,7 +252,7 @@ func Base(title string) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "<button class=\"search-toggle\" type=\"button\" data-palette-toggle title=\"Search\" aria-label=\"Search (⌘K)\">⌘K</button> <button class=\"theme-toggle\" type=\"button\" data-theme-toggle aria-label=\"Toggle theme\"><span class=\"moon\" aria-hidden=\"true\">☾</span> <span class=\"sun\" aria-hidden=\"true\">☀</span></button></div></header><main class=\"page\"><div class=\"content-inner\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "<button class=\"search-toggle\" type=\"button\" data-palette-toggle title=\"Search\" aria-label=\"Search (⌘K)\">⌘K</button> <button class=\"theme-toggle\" type=\"button\" data-theme-toggle aria-label=\"Toggle theme\"><span class=\"moon\" aria-hidden=\"true\">☾</span> <span class=\"sun\" aria-hidden=\"true\">☀</span></button></div></header><main class=\"page\" id=\"main\" tabindex=\"-1\"><div class=\"content-inner\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -267,7 +267,7 @@ func Base(title string) templ.Component {
 		var templ_7745c5c3_Var17 string
 		templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs("blittermib " + version)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/base.templ`, Line: 104, Col: 127}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/base.templ`, Line: 112, Col: 127}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 		if templ_7745c5c3_Err != nil {
