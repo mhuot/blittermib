@@ -1,0 +1,64 @@
+name: Sync upstream
+
+# Keeps this fork's main current with no42-org/blittermib and, on any
+# new upstream commits, redeploys automatically. Our infra commits
+# (compose.override.yml, deploy.yml, this file) live only on the fork
+# and don't exist upstream, so the merge is conflict-free unless
+# upstream ever adds a file with the same path — in which case the
+# merge step fails loudly (no push, no deploy) for manual resolution.
+#
+# Why an explicit deploy dispatch: a push made with the default
+# GITHUB_TOKEN does NOT trigger other workflows (recursion guard), so
+# deploy.yml's `on: push` won't fire here. workflow_dispatch is the
+# documented exception, so we kick it directly after a successful push.
+
+on:
+  schedule:
+    - cron: '17 5 * * 0'   # weekly, Sunday 05:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write   # push the merge to main
+  actions: write    # dispatch deploy.yml
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout fork (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge upstream/main
+        id: merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/no42-org/blittermib.git
+          git fetch --no-tags upstream main
+          before="$(git rev-parse HEAD)"
+          git merge --no-edit upstream/main
+          after="$(git rev-parse HEAD)"
+          if [ "$before" = "$after" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already up to date with upstream."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Merged $(git rev-list --count "$before"..HEAD) new commit(s) from upstream."
+          fi
+
+      - name: Push merge
+        if: steps.merge.outputs.changed == 'true'
+        run: git push origin HEAD:main
+
+      - name: Trigger deploy
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run deploy.yml --ref main
