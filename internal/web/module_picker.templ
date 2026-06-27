@@ -21,7 +21,7 @@ templ modulePicker(modules []model.Module) {
 		x-on:keydown.escape.window="open = false"
 		x-on:click.self="open = false"
 		x-cloak>
-		<div class="module-picker-card" role="dialog" aria-label="Switch module">
+		<div class="module-picker-card" role="dialog" aria-modal="true" aria-label="Switch module">
 			<div class="module-picker-search">
 				<span class="prompt" aria-hidden="true">›</span>
 				<input type="search"
