@@ -16,6 +16,14 @@ services:
     ports: !reset []
     networks:
       - nginx-proxy-network
+    # Relocate the import intake OFF the compose project dir. The base
+    # compose binds ./import, but under CD the project dir is the
+    # runner's git checkout — the container (root entrypoint) creates
+    # import/{duplicate,failed,.tmp} owned by uid 1000 there, which then
+    # breaks actions/checkout's `git clean`. Same target path overrides
+    # the relative bind; drop MIBs into ~/blittermib-import on the host.
+    volumes:
+      - /home/ubuntu/blittermib-import:/var/lib/blittermib/data/mibs/import
     # Pin the secure posture explicitly. All three are off by default
     # in the app (fail-closed), but setting them false documents intent
     # and survives an accidental env_file that flips a default. This is
