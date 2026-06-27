@@ -16,6 +16,32 @@ services:
     ports: !reset []
     networks:
       - nginx-proxy-network
+    # Pin the secure posture explicitly. All three are off by default
+    # in the app (fail-closed), but setting them false documents intent
+    # and survives an accidental env_file that flips a default. This is
+    # a public, unauthenticated instance: no write/active surfaces.
+    #   - uploads  -> POST/DELETE /api/v1/upload (unauthenticated write)
+    #   - walk     -> /walk* SNMP-output decoder (untrusted parse)
+    #   - mcp      -> network MCP transport
+    environment:
+      BLITTERMIB_UPLOAD_ENABLED: "false"
+      BLITTERMIB_WALK_DECODER_ENABLED: "false"
+      BLITTERMIB_MCP_ENABLED: "false"
+    # Runtime hardening. The entrypoint starts as root only to repair
+    # data-volume ownership, then drops to uid 1000 via su-exec, so it
+    # needs exactly CHOWN + SETUID + SETGID (DAC_OVERRIDE/FOWNER cover
+    # chowning root-owned files dropped into ./import). Everything else
+    # is dropped. no-new-privileges blocks setuid-bit escalation.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
 
 networks:
   nginx-proxy-network:
