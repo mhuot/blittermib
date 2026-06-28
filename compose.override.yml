@@ -35,6 +35,11 @@ services:
       BLITTERMIB_UPLOAD_ENABLED: "false"
       BLITTERMIB_WALK_DECODER_ENABLED: "false"
       BLITTERMIB_MCP_ENABLED: "false"
+      # Raise the compile hang-backstop floor so very large single-file
+      # MIBs can import (METASWITCH-MIB: ~92k objects, ~10 min in
+      # smidump). Only raises the FLOOR — normal small MIBs still finish
+      # in milliseconds; this just delays killing a genuinely-stuck one.
+      BLITTERMIB_COMPILE_TIMEOUT: "20m"
     # Runtime hardening. The entrypoint starts as root only to repair
     # data-volume ownership, then drops to uid 1000 via su-exec, so it
     # needs exactly CHOWN + SETUID + SETGID (DAC_OVERRIDE/FOWNER cover

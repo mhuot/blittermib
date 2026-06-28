@@ -645,12 +645,22 @@ func hashFile(path string) (string, int64, error) {
 }
 
 // scaledCompileTimeout mirrors the ingest CLI's bound: a hang
-// backstop (1 s/file, 5 m floor), never a throughput ceiling.
+// backstop (1 s/file, 5 m floor), never a throughput ceiling. The
+// floor is overridable via BLITTERMIB_COMPILE_TIMEOUT (a Go duration
+// like "20m") so very large single-file MIBs — e.g. METASWITCH-MIB,
+// ~92k objects, ~10 min in smidump — can be imported without raising
+// the bound for everyone. Unset or unparseable keeps the 5 m default.
 func scaledCompileTimeout(n int) time.Duration {
-	if d := time.Duration(n) * time.Second; d > 5*time.Minute {
+	floor := 5 * time.Minute
+	if v := os.Getenv("BLITTERMIB_COMPILE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			floor = d
+		}
+	}
+	if d := time.Duration(n) * time.Second; d > floor {
 		return d
 	}
-	return 5 * time.Minute
+	return floor
 }
 
 // budgetExhausted mirrors the ingest CLI's two-shape detection:
