@@ -401,26 +401,22 @@ func (e *Engine) run(ctx context.Context, paths []string, replace bool) []Outcom
 			testHookBeforeMove(r.Target, dest)
 		}
 		if err := moveFile(r.Target, dest); err != nil {
-			// moveFile reports ENOENT only when it wrote nothing to the
-			// destination (a successful cross-device copy whose source
-			// cleanup races is reported as success). If the destination
-			// nonetheless exists, a concurrent Import pass (the rescan and
-			// the watcher can each capture this drop before locking)
-			// already filed this module — skip rather than quarantine a
-			// spurious failure. Any other ENOENT (e.g. the destination
-			// parent vanished) leaves no destination and is a real
-			// failure.
+			// A non-nil moveFile error means nothing was written to the
+			// curated tree (source cleanup after the destination is in
+			// place is best-effort and never surfaces here). ENOENT
+			// almost always means the source is already gone: a prior or
+			// concurrent pass filed this drop, or it was removed
+			// mid-pipeline. The rescan, watcher, and uploads share the
+			// engine lock, so a straggler that captured the path before
+			// locking is normally dropped at the settle stat above — but
+			// the source can still vanish during the compile window. With
+			// no source left there is nothing to import, so skip rather
+			// than quarantine a module that filed fine. A still-present
+			// source means the failure was real (e.g. the destination
+			// parent vanished) — quarantine it.
 			if errors.Is(err, fs.ErrNotExist) {
-				_, statErr := os.Lstat(dest)
-				if statErr == nil {
+				if _, statErr := os.Lstat(r.Target); errors.Is(statErr, fs.ErrNotExist) {
 					continue
-				}
-				if !errors.Is(statErr, fs.ErrNotExist) {
-					// The destination's existence is itself unknown
-					// (e.g. a permission/IO error) — fold that into the
-					// quarantine reason so it doesn't read as a bare
-					// "no such file".
-					err = fmt.Errorf("%w (destination stat: %v)", err, statErr)
 				}
 			}
 			outcomes = append(outcomes, e.quarantine(ctx, r.Target, StatusFailed,
@@ -601,21 +597,24 @@ func moveFile(src, dst string) error {
 		return err
 	}
 	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, dst); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	// The destination is now written; removing the source is cleanup.
-	// A source that has already vanished (a concurrent pass took it) is
-	// not a failed move — the goal state holds. Report only non-ENOENT
-	// removal errors. This keeps the invariant callers rely on: a
-	// returned ENOENT means this call wrote nothing to the destination
-	// (it can originate from the rename/open of a missing source or an
-	// unreachable destination path, never from a completed copy).
+	// The destination is in place, so the move succeeded. Removing the
+	// source is best-effort cleanup: returning an error here would
+	// orphan the freshly-written curated file and quarantine a module
+	// that was imported. A vanished source (a concurrent pass took it)
+	// is fine; any other removal error is logged and the leftover source
+	// is re-examined — and deduped against the now-curated file — by the
+	// next pass. This keeps the invariant callers rely on: a non-nil
+	// error means nothing was written to the destination.
 	if err := os.Remove(src); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
+		slog.Warn("import: curated file written but source cleanup failed; leaving source for the next pass",
+			"src", src, "dst", dst, "err", err)
 	}
 	return nil
 }

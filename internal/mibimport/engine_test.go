@@ -8,6 +8,7 @@ package mibimport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -430,9 +431,12 @@ func TestImportSkipsAlreadyFiledByConcurrentPass(t *testing.T) {
 	p := drop(t, e, "BLITTERMIB-PROBE-MIB", probeMIB)
 
 	const sentinel = "filed by a concurrent pass"
+	var hookFired bool
 	testHookBeforeMove = func(target, dest string) {
 		// Stand in for the winning pass: write the curated file and
-		// remove the source, so this pass's move fails with ENOENT.
+		// remove the source, so this pass's move fails with ENOENT and
+		// finds its source already gone.
+		hookFired = true
 		if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
 			t.Fatal(err)
 		}
@@ -447,12 +451,27 @@ func TestImportSkipsAlreadyFiledByConcurrentPass(t *testing.T) {
 
 	outs := e.Import(ctx, []string{p})
 
+	// Positive proof the pipeline actually reached the move (compiled the
+	// module, created the dir, hit the seam). Without this, the
+	// assertions below could pass for the wrong reason — e.g. an upstream
+	// compile failure that quarantined before the move and never
+	// exercised the skip at all.
+	if !hookFired {
+		t.Fatal("move seam never fired — the pipeline did not reach the move")
+	}
+
 	// Silent skip: no outcome produced, and crucially nothing quarantined.
 	if len(outs) != 0 {
 		t.Fatalf("got %d outcomes, want 0 (silent skip): %+v", len(outs), outs)
 	}
 	mustNotExist(t, p) // source was consumed by the winning pass
 	mustNotExist(t, filepath.Join(e.FailedDir(), "BLITTERMIB-PROBE-MIB"))
+
+	// The skip records nothing in the store: the winning pass owns the
+	// module row, and this straggler must not write or clobber it.
+	if _, err := e.Store.GetModule(ctx, "BLITTERMIB-PROBE-MIB"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetModule after skip: err = %v, want ErrNotFound (skip must not touch the store)", err)
+	}
 
 	// The winning pass's curated file is left intact (not clobbered or
 	// re-quarantined).
