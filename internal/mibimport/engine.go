@@ -200,6 +200,12 @@ func (e *Engine) ImportReplacing(ctx context.Context, path string) Outcome {
 		Reason: "file disappeared during replacement"}
 }
 
+// testHookBeforeMove, when non-nil, is invoked just before a settled
+// file is moved into the curated tree — a test seam for simulating a
+// concurrent Import pass that files the source first. Always nil outside
+// tests.
+var testHookBeforeMove func(target, dest string)
+
 func (e *Engine) run(ctx context.Context, paths []string, replace bool) []Outcome {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -389,7 +395,34 @@ func (e *Engine) run(ctx context.Context, paths []string, replace bool) []Outcom
 				fmt.Sprintf("create destination dir: %v", err), ""))
 			continue
 		}
+		// Test seam: lets a test simulate a concurrent pass filing this
+		// drop between the dir creation and the move. Nil in production.
+		if testHookBeforeMove != nil {
+			testHookBeforeMove(r.Target, dest)
+		}
 		if err := moveFile(r.Target, dest); err != nil {
+			// moveFile reports ENOENT only when it wrote nothing to the
+			// destination (a successful cross-device copy whose source
+			// cleanup races is reported as success). If the destination
+			// nonetheless exists, a concurrent Import pass (the rescan and
+			// the watcher can each capture this drop before locking)
+			// already filed this module — skip rather than quarantine a
+			// spurious failure. Any other ENOENT (e.g. the destination
+			// parent vanished) leaves no destination and is a real
+			// failure.
+			if errors.Is(err, fs.ErrNotExist) {
+				_, statErr := os.Lstat(dest)
+				if statErr == nil {
+					continue
+				}
+				if !errors.Is(statErr, fs.ErrNotExist) {
+					// The destination's existence is itself unknown
+					// (e.g. a permission/IO error) — fold that into the
+					// quarantine reason so it doesn't read as a bare
+					// "no such file".
+					err = fmt.Errorf("%w (destination stat: %v)", err, statErr)
+				}
+			}
 			outcomes = append(outcomes, e.quarantine(ctx, r.Target, StatusFailed,
 				fmt.Sprintf("move into corpus: %v", err), ""))
 			continue
@@ -574,7 +607,17 @@ func moveFile(src, dst string) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	return os.Remove(src)
+	// The destination is now written; removing the source is cleanup.
+	// A source that has already vanished (a concurrent pass took it) is
+	// not a failed move — the goal state holds. Report only non-ENOENT
+	// removal errors. This keeps the invariant callers rely on: a
+	// returned ENOENT means this call wrote nothing to the destination
+	// (it can originate from the rename/open of a missing source or an
+	// unreachable destination path, never from a completed copy).
+	if err := os.Remove(src); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func (e *Engine) smidumpPath() string {
