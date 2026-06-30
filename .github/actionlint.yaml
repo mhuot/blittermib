@@ -1,0 +1,5 @@
+# actionlint config. Declares the custom self-hosted runner label used by
+# this fork's deploy workflow so actionlint doesn't flag it as unknown.
+self-hosted-runner:
+  labels:
+    - blittermib
