@@ -12,7 +12,7 @@ type ModuleDiagnostics struct {
 // Diagnostics renders the global diagnostics overview: every module
 // that didn't parse cleanly, with each warning/error inline.
 templ Diagnostics(groups []ModuleDiagnostics) {
-	@Base("Diagnostics · blittermib") {
+	@Base("Diagnostics · blittermib", "Parse warnings and errors for the loaded SNMP MIB modules.") {
 		<h1 class="symbol-name">Diagnostics</h1>
 		if len(groups) == 0 {
 			<p class="summary muted">All modules parsed cleanly.</p>

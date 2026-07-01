@@ -94,7 +94,7 @@ func TreePage(focusOID string) templ.Component {
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = Base("OID tree · blittermib").Render(templ.WithChildren(ctx, templ_7745c5c3_Var2), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = Base("OID tree · blittermib", "Browse the SNMP OID tree from the root down through every loaded MIB module.").Render(templ.WithChildren(ctx, templ_7745c5c3_Var2), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

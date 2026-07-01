@@ -7,7 +7,7 @@ import "fmt"
 // the server side), a drop zone slots in between the hero search and
 // the stats line per design.md D11.
 templ Landing(modules, symbols int, uploadsEnabled bool) {
-	@Base("blittermib") {
+	@Base("blittermib", siteDescription) {
 		<div class="hero">
 			<h1 class="hero-brand">
 				<span class="brand-mark" aria-hidden="true">
@@ -53,7 +53,7 @@ templ Landing(modules, symbols int, uploadsEnabled bool) {
 // state's "drop your MIB files here:" path block already names
 // mibsDir and the operator can follow that.
 templ LandingEmpty(mibsDir string) {
-	@Base("blittermib") {
+	@Base("blittermib", siteDescription) {
 		<div class="empty">
 			<div class="brand-large">
 				<span class="brand-mark" aria-hidden="true">

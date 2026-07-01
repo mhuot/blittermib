@@ -4,7 +4,7 @@ import "github.com/no42-org/blittermib/internal/model"
 
 // ModuleIndex lists every loaded module in alpha order.
 templ ModuleIndex(modules []model.Module) {
-	@Base("Modules · blittermib") {
+	@Base("Modules · blittermib", "Browse every SNMP MIB module in the corpus, with per-module object and notification counts.") {
 		<h1 class="symbol-name">Modules</h1>
 		<table class="refs">
 			<tbody>

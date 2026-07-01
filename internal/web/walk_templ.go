@@ -115,7 +115,7 @@ func WalkUpload(view WalkUploadView) templ.Component {
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = Base("Walk decoder — blittermib").Render(templ.WithChildren(ctx, templ_7745c5c3_Var3), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = Base("Walk decoder — blittermib", "").Render(templ.WithChildren(ctx, templ_7745c5c3_Var3), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -476,7 +476,7 @@ func WalkResults(view WalkResultsView) templ.Component {
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = Base("Walk results — blittermib").Render(templ.WithChildren(ctx, templ_7745c5c3_Var6), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = Base("Walk results — blittermib", "").Render(templ.WithChildren(ctx, templ_7745c5c3_Var6), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

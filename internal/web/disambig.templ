@@ -9,7 +9,7 @@ import "github.com/no42-org/blittermib/internal/model"
 // exactly one match, and serves a 404 when there are zero. This page
 // is only rendered for the multi-match case.
 templ SymbolDisambiguation(name string, matches []model.Symbol) {
-	@Base("Multiple symbols named " + name + " · blittermib") {
+	@Base("Multiple symbols named "+name+" · blittermib", "Symbols named "+name+" defined in more than one SNMP MIB module.") {
 		<h1 class="symbol-name">{ name }</h1>
 		<p class="summary">
 			Multiple modules export a symbol named <code>{ name }</code>.

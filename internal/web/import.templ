@@ -40,7 +40,7 @@ type ImportView struct {
 // ImportIndex renders /import: drop zone, pending intake, the two
 // quarantines with reasons, and recent pipeline outcomes.
 templ ImportIndex(v ImportView) {
-	@Base("Import — blittermib") {
+	@Base("Import — blittermib", "") {
 		<article class="upload-page">
 			<h1>Import</h1>
 			<p class="upload-tagline">Drop MIB files here or into <code>mibs/import/</code> — valid files are compiled and filed into the curated tree automatically.</p>

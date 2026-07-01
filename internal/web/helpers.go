@@ -17,6 +17,11 @@ import (
 	"github.com/no42-org/blittermib/internal/model"
 )
 
+// siteDescription is the default <meta name="description"> for the
+// landing page — the fallback snippet a search engine shows for the
+// site root when no page-specific description applies.
+const siteDescription = "Browse SNMP MIBs, beautifully — search symbols, OIDs, modules, and full-text descriptions across the loaded MIB corpus."
+
 // moduleURL returns the canonical URL for a module's detail page.
 //
 // templ.SafeURL marks the value as already safe for href attributes;

@@ -7,7 +7,7 @@ package web
 // The tree.js island reads data-tree-focus to decide which subtree to
 // render initially, then lazy-loads each level via /api/v1/tree.
 templ TreePage(focusOID string) {
-	@Base("OID tree · blittermib") {
+	@Base("OID tree · blittermib", "Browse the SNMP OID tree from the root down through every loaded MIB module.") {
 		<h1 class="symbol-name">OID tree</h1>
 		if focusOID != "" {
 			<p class="summary">

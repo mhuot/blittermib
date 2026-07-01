@@ -51,7 +51,7 @@ type SymbolView struct {
 // the rest delegates to symbolDetailBody, which is also embedded by
 // the workspace right pane so the two surfaces never drift.
 templ SymbolDetail(view *SymbolView) {
-	@Base(view.Symbol.QualifiedName() + " · blittermib") {
+	@Base(view.Symbol.QualifiedName() + " · blittermib", summarizeSymbol(view.Symbol)) {
 		<nav class="breadcrumb">
 			<a href={ moduleURL(view.Symbol.ModuleName) }>{ view.Symbol.ModuleName }</a>
 			<span class="sep">›</span>

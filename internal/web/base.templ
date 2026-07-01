@@ -8,12 +8,18 @@ package web
 // The inline theme-init <script> in <head> applies the saved theme
 // before paint to avoid a flash of the wrong palette. It mirrors
 // what blitsbom does (see CLAUDE.md sister-product alignment).
-templ Base(title string) {
+templ Base(title, description string) {
 	<!DOCTYPE html>
 	<html lang="en">
 		<head>
 			<meta charset="UTF-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			// Per-page description drives the search-result snippet. Pages
+			// pass the symbol/module DESCRIPTION (or a static blurb);
+			// dynamic/utility pages pass "" and omit the tag entirely.
+			if description != "" {
+				<meta name="description" content={ description }/>
+			}
 			// htmx history is disabled. Without this, every hx-push-url
 			// navigation cloned and serialized the entire <body> into
 			// localStorage — on large modules (FspR7-MIB renders ~10 MB

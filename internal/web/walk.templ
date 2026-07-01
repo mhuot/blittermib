@@ -42,7 +42,7 @@ templ walkIntakeForm() {
 // walkIntakeForm. The accompanying copy states the privacy posture —
 // the walk is parsed in memory and never stored.
 templ WalkUpload(view WalkUploadView) {
-	@Base("Walk decoder — blittermib") {
+	@Base("Walk decoder — blittermib", "") {
 		<article class="walk-upload">
 			<h1>Decode an SNMP walk</h1>
 			<p>
@@ -64,7 +64,7 @@ templ WalkUpload(view WalkUploadView) {
 // grouped by module, the derived notification/trap module section, and
 // the unresolved-OID guidance. A form-POST downloads the bundle.
 templ WalkResults(view WalkResultsView) {
-	@Base("Walk results — blittermib") {
+	@Base("Walk results — blittermib", "") {
 		<!-- walk-overlay.js reads this on load and persists it to
 		sessionStorage so the workspace pages can decorate rows with
 		walk values. The attribute value is templ-escaped. -->

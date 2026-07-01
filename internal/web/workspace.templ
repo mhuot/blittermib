@@ -14,7 +14,7 @@ import (
 // panes — OID tree on the left, symbol list in the center, detail
 // pane on the right.
 templ Workspace(view *WorkspaceView) {
-	@Base(view.Module.Name + " · blittermib") {
+	@Base(view.Module.Name + " · blittermib", moduleSummaryPreview(view.Module.Description)) {
 		@workspaceStatusBar(view)
 		@moduleInfoBar(view.Module, view.ModuleDownloadable, view.BundleFileCount, view.HasNotifications)
 		@typeDefsBar(view)
