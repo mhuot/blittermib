@@ -261,6 +261,37 @@ func (s *Store) ListModules(ctx context.Context) ([]model.Module, error) {
 	return out, rows.Err()
 }
 
+// SymbolRef is the minimal (module, name) pair identifying a symbol's
+// canonical page. The sitemap generator needs only these two URL
+// components, so it enumerates them with one lightweight query rather
+// than materialising full symbol rows per module.
+type SymbolRef struct {
+	Module string
+	Name   string
+}
+
+// ListSymbolRefs returns the module + name of every symbol in the
+// store, ordered deterministically. Backs the sitemap: it walks the
+// whole corpus in a single query instead of a per-module fan-out.
+func (s *Store) ListSymbolRefs(ctx context.Context) ([]SymbolRef, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT module_name, name FROM symbol ORDER BY module_name, name`)
+	if err != nil {
+		return nil, fmt.Errorf("list symbol refs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var symbolRefs []SymbolRef
+	for rows.Next() {
+		var ref SymbolRef
+		if err := rows.Scan(&ref.Module, &ref.Name); err != nil {
+			return nil, err
+		}
+		symbolRefs = append(symbolRefs, ref)
+	}
+	return symbolRefs, rows.Err()
+}
+
 // GetSymbol returns a symbol by qualified name.
 func (s *Store) GetSymbol(ctx context.Context, module, name string) (*model.Symbol, error) {
 	row := s.db.QueryRowContext(ctx, symbolSelectColumns+`

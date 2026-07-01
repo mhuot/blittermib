@@ -48,6 +48,13 @@ func (s *Server) routes() {
 	s.mux.Handle("/imprint", chain(http.HandlerFunc(s.handleImprint), withLogging, withRecover))
 	s.mux.Handle("/privacy", chain(http.HandlerFunc(s.handlePrivacy), withLogging, withRecover))
 
+	// Crawler discovery surfaces. robots.txt advertises the sitemap;
+	// /sitemap.xml is an index pointing at one /sitemaps/{n}.xml child
+	// per 50k-URL page of canonical module and symbol pages.
+	s.mux.Handle("/robots.txt", chain(http.HandlerFunc(s.handleRobots), withLogging, withRecover))
+	s.mux.Handle("/sitemap.xml", chain(http.HandlerFunc(s.handleSitemapIndex), withLogging, withRecover))
+	s.mux.Handle("/sitemaps/", chain(http.HandlerFunc(s.handleSitemapPage), withLogging, withRecover))
+
 	s.mux.Handle("/m/", chain(http.HandlerFunc(s.handleModule), withLogging, withRecover))
 	s.mux.Handle("/s/", chain(http.HandlerFunc(s.handleSymbol), withLogging, withRecover))
 	s.mux.Handle("/o/", chain(http.HandlerFunc(s.handleOID), withLogging, withRecover))
