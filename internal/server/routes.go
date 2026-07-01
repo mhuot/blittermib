@@ -45,8 +45,8 @@ func (s *Server) routes() {
 	s.mux.Handle("/healthz", chain(http.HandlerFunc(s.handleHealth), withLogging, withRecover))
 	s.mux.Handle("/readyz", chain(http.HandlerFunc(s.handleReady), withLogging, withRecover))
 	s.mux.Handle("/version", chain(http.HandlerFunc(s.handleVersion), withLogging, withRecover))
-	s.mux.Handle("/imprint", chain(http.HandlerFunc(s.handleImprint), withLogging, withRecover))
-	s.mux.Handle("/privacy", chain(http.HandlerFunc(s.handlePrivacy), withLogging, withRecover))
+	s.mux.Handle("/imprint", chain(http.HandlerFunc(s.handleImprint), withLogging, withRecover, s.withPublicCache))
+	s.mux.Handle("/privacy", chain(http.HandlerFunc(s.handlePrivacy), withLogging, withRecover, s.withPublicCache))
 
 	// Crawler discovery surfaces. robots.txt advertises the sitemap;
 	// /sitemap.xml is an index pointing at one /sitemaps/{n}.xml child
@@ -55,20 +55,27 @@ func (s *Server) routes() {
 	s.mux.Handle("/sitemap.xml", chain(http.HandlerFunc(s.handleSitemapIndex), withLogging, withRecover))
 	s.mux.Handle("/sitemaps/", chain(http.HandlerFunc(s.handleSitemapPage), withLogging, withRecover))
 
-	s.mux.Handle("/m/", chain(http.HandlerFunc(s.handleModule), withLogging, withRecover))
-	s.mux.Handle("/s/", chain(http.HandlerFunc(s.handleSymbol), withLogging, withRecover))
-	s.mux.Handle("/o/", chain(http.HandlerFunc(s.handleOID), withLogging, withRecover))
+	// Canonical reference pages are deterministic and user-independent,
+	// so they carry a shared-cache Cache-Control (see withPublicCache)
+	// to let a CDN edge absorb crawler and repeat traffic. /o/ redirects
+	// and any 404s are stripped of the header by the wrapper.
+	s.mux.Handle("/m/", chain(http.HandlerFunc(s.handleModule), withLogging, withRecover, s.withPublicCache))
+	s.mux.Handle("/s/", chain(http.HandlerFunc(s.handleSymbol), withLogging, withRecover, s.withPublicCache))
+	s.mux.Handle("/o/", chain(http.HandlerFunc(s.handleOID), withLogging, withRecover, s.withPublicCache))
 	s.mux.Handle("/search", chain(http.HandlerFunc(s.handleSearch), withLogging, withRecover))
-	s.mux.Handle("/diagnostics", chain(http.HandlerFunc(s.handleDiagnostics), withLogging, withRecover))
-	s.mux.Handle("/tree", chain(http.HandlerFunc(s.handleTree), withLogging, withRecover))
-	s.mux.Handle("/tree/", chain(http.HandlerFunc(s.handleTree), withLogging, withRecover))
+	s.mux.Handle("/diagnostics", chain(http.HandlerFunc(s.handleDiagnostics), withLogging, withRecover, s.withPublicCache))
+	s.mux.Handle("/tree", chain(http.HandlerFunc(s.handleTree), withLogging, withRecover, s.withPublicCache))
+	s.mux.Handle("/tree/", chain(http.HandlerFunc(s.handleTree), withLogging, withRecover, s.withPublicCache))
 
 	s.mux.Handle("/api/v1/search", chain(http.HandlerFunc(s.handleAPISearch), withLogging, withRecover))
 	s.mux.Handle("/api/v1/symbol/", chain(http.HandlerFunc(s.handleAPISymbol), withLogging, withRecover))
 	s.mux.Handle("/api/v1/tree", chain(http.HandlerFunc(s.handleAPITree), withLogging, withRecover))
 	s.mux.Handle("/api/v1/tree/fragment", chain(http.HandlerFunc(s.handleAPITreeFragment), withLogging, withRecover))
 
-	s.mux.Handle("/", chain(http.HandlerFunc(s.handleIndex), withLogging, withRecover))
+	// The landing page (exact "/") is cacheable; the same catch-all
+	// serves 404s for every unknown path, but the wrapper strips the
+	// header from those non-200 responses.
+	s.mux.Handle("/", chain(http.HandlerFunc(s.handleIndex), withLogging, withRecover, s.withPublicCache))
 }
 
 // routesUpload registers the upload + delete + management routes.
