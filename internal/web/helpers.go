@@ -78,7 +78,11 @@ func WorkspaceSymbolURL(module, name, oid string) templ.SafeURL {
 	if oid == "" {
 		return symbolURL(module, name)
 	}
-	return templ.SafeURL("/m/" + module + "/" + oid)
+	// Scope to the OID but SELECT by name: names are unique per module
+	// (schema UNIQUE(module_name, name)), so a click resolves to THIS exact
+	// symbol even when a buggy MIB shares its OID with another. A bare-OID
+	// deep link still resolves (auto-select), so this only adds precision.
+	return templ.SafeURL("/m/" + url.PathEscape(module) + "/" + url.PathEscape(oid) + "?sel=" + url.QueryEscape(name))
 }
 
 // KindHasChildren is the kind-based heuristic for "does clicking
@@ -163,6 +167,12 @@ func WorkspaceRowURL(view *WorkspaceView, s *model.Symbol) templ.SafeURL {
 		// detail pane the only thing reflecting the click.
 		return templ.SafeURL("/m/" + url.PathEscape(module) + "?sel=" + url.QueryEscape(s.Name))
 	}
+	// Selection is by NAME, not OID: names are unique per module (schema
+	// UNIQUE(module_name, name)), so a click resolves to THIS exact symbol
+	// even when a buggy MIB shares its OID with another (a bare-OID
+	// selector would strand the user on whichever symbol won GetSymbolByOID's
+	// arbitrary tie-break). The scope path stays OID-based; only the
+	// selector is the name.
 	if !KindHasChildren(s.Kind) {
 		// Preserve the current scope only when the clicked leaf
 		// actually lives under it. Setting scope to the leaf
@@ -170,15 +180,15 @@ func WorkspaceRowURL(view *WorkspaceView, s *model.Symbol) templ.SafeURL {
 		// scope that doesn't enclose the leaf strands the list
 		// pane on an unrelated subtree.
 		if scope != "" && OIDUnderPrefix(s.OID, scope) {
-			return templ.SafeURL("/m/" + url.PathEscape(module) + "/" + url.PathEscape(scope) + "?sel=" + url.QueryEscape(s.OID))
+			return templ.SafeURL("/m/" + url.PathEscape(module) + "/" + url.PathEscape(scope) + "?sel=" + url.QueryEscape(s.Name))
 		}
 		if s.ParentOID != "" {
-			return templ.SafeURL("/m/" + url.PathEscape(module) + "/" + url.PathEscape(s.ParentOID) + "?sel=" + url.QueryEscape(s.OID))
+			return templ.SafeURL("/m/" + url.PathEscape(module) + "/" + url.PathEscape(s.ParentOID) + "?sel=" + url.QueryEscape(s.Name))
 		}
-		return templ.SafeURL("/m/" + url.PathEscape(module) + "?sel=" + url.QueryEscape(s.OID))
+		return templ.SafeURL("/m/" + url.PathEscape(module) + "?sel=" + url.QueryEscape(s.Name))
 	}
-	// Container — drill in (scope change).
-	return templ.SafeURL("/m/" + url.PathEscape(s.ModuleName) + "/" + url.PathEscape(s.OID))
+	// Container — drill in (scope change) and select it by name.
+	return templ.SafeURL("/m/" + url.PathEscape(s.ModuleName) + "/" + url.PathEscape(s.OID) + "?sel=" + url.QueryEscape(s.Name))
 }
 
 // syntaxShort returns the short display form of a symbol's
@@ -266,29 +276,9 @@ func notifyObjectURL(module, name string) templ.SafeURL {
 	return templ.SafeURL("/m/" + url.PathEscape(module) + "?sel=" + url.QueryEscape(name))
 }
 
-// treeFragmentURL is the HTMX target that returns the children of
-// an OID rendered as workspace tree-rows. The `module` + `scope`
-// query params let the fragment handler rebuild a synthetic
-// `*WorkspaceView` for `WorkspaceRowURL` so leaf clicks inside a
-// freshly-expanded subtree preserve the URL scope (matching list-
-// row behavior). Both are URL-safe (alphanumeric + dash for module
-// names, digits + dots for OIDs) so no escaping is needed.
-func treeFragmentURL(module, scope, parentOID string) templ.SafeURL {
-	u := "/api/v1/tree/fragment?parent=" + parentOID
-	if module != "" {
-		u += "&module=" + module
-	}
-	if scope != "" {
-		u += "&scope=" + scope
-	}
-	return templ.SafeURL(u)
-}
-
-// viewModuleName / viewScopeOID are nil-safe accessors used by the
-// templ when rendering a tree-row outside a full workspace render
-// (e.g. WorkspaceTreeFragment with view==nil during early callers
-// — left over for safety, but every fragment now constructs a
-// synthetic view).
+// viewModuleName / viewScopeOID are nil-safe accessors for the
+// workspace module name / URL scope, used by WorkspaceRowURL and the
+// scope breadcrumb.
 func viewModuleName(v *WorkspaceView) string {
 	if v == nil || v.Module == nil {
 		return ""
@@ -303,15 +293,17 @@ func viewScopeOID(v *WorkspaceView) string {
 	return v.ScopeOID
 }
 
-// selectedOID returns the OID of the workspace view's currently
-// selected symbol, or "" when nothing is selected. Threaded into
-// the list pane so the matching row can carry a `selected` class
-// for the design's tinted-background highlight.
-func selectedOID(v *WorkspaceView) string {
+// selectedName returns the NAME of the workspace view's currently
+// selected symbol, or "" when nothing is selected. Threaded into the list
+// pane so the matching row carries the `selected` class. Keyed on name
+// (unique per module), not OID: on a collided OID an OID match would
+// highlight BOTH colliding rows, so the list couldn't show WHICH symbol is
+// selected — the very ambiguity the selection-by-name fix removes.
+func selectedName(v *WorkspaceView) string {
 	if v == nil || v.Selected == nil || v.Selected.Symbol == nil {
 		return ""
 	}
-	return v.Selected.Symbol.OID
+	return v.Selected.Symbol.Name
 }
 
 // BreadcrumbStep is one segment in the workspace's scope-path
@@ -1147,48 +1139,20 @@ type TableColumn struct {
 	IsIndex  bool
 }
 
-// TreeRow is one node in the workspace's left-rail OID tree.
-//
-// `HasChildren` drives whether a chevron renders so the user can
-// drill in via lazy HTMX-fragment expansion.
-//
-// `Expanded`, `Selected`, and `PreloadedKids` are populated by the
-// workspace handler's auto-expand pass when a selection or scope
-// is set. Rows on the path from the module's top-level entry
-// down to the selection are marked Expanded=true with their
-// children threaded into PreloadedKids — that way the tree
-// preserves navigation context across full-page navigations
-// without needing client-side state. The row matching the
-// current selection picks up Selected=true for the accent
-// highlight.
-type TreeRow struct {
-	Symbol        model.Symbol
-	HasChildren   bool
-	Expanded      bool
-	Selected      bool
-	PreloadedKids []TreeRow
-}
-
-// TreeRowAlpineState renders the `x-data` initial-state JSON for a
-// tree row, baking the server-decided `expanded` / `loaded` values
-// into the markup so the row paints in the right state on first
-// render. When `expanded` is true, `loaded` is also true so the
-// chevron's click handler treats it as already-fetched and
-// just toggles visibility — no duplicate fragment fetch.
-func TreeRowAlpineState(expanded bool) string {
-	return fmt.Sprintf(`{ expanded: %t, loaded: %t, fetching: false }`, expanded, expanded)
-}
-
 // WorkspaceView aggregates everything the workspace shell needs for
 // a single page render. Built by Server.handleWorkspace.
 type WorkspaceView struct {
 	Module   *model.Module
 	Counts   *model.FamilyCounts
-	TreeRows []TreeRow
 	ListRows []model.Symbol
 	Selected *SymbolView // nil → empty-state right pane
 	OIDPath  []model.OIDStep
-	Modules  []model.Module // preloaded for the status-bar picker
+	// SelectionOID is the OID of the resolved selection; the tree
+	// island uses it as data-tree-focus to expand the spine and
+	// highlight the node. Empty when nothing (or a no-OID symbol) is
+	// selected, leaving the tree at the apex.
+	SelectionOID string
+	Modules      []model.Module // preloaded for the status-bar picker
 	// MissingOID is set when the URL specifies an OID the module
 	// doesn't cover; the workspace renders without selection and a
 	// soft hint in the right pane.
@@ -1235,6 +1199,26 @@ type WorkspaceView struct {
 	// per notification name, for the inline list-row badges. Empty for
 	// modules with no notifications.
 	Relationships map[string]correlate.Relationship
+}
+
+// OIDCollision names one of several symbols a module defines at the same
+// OID (a MIB bug). Kind lets the UI say "a table AND a notification". The
+// collision set for the SELECTED symbol lives on SymbolView.CollisionSiblings
+// (resolved per-symbol via store.SymbolsAtOID), so the warning renders the
+// same on the workspace right pane and the canonical /s/ page.
+type OIDCollision struct {
+	Name string
+	Kind model.SymbolKind
+}
+
+// CollisionSummary renders collision entries as "name (kind), name (kind)"
+// for the detail-pane warning text.
+func CollisionSummary(entries []OIDCollision) string {
+	parts := make([]string, len(entries))
+	for i, e := range entries {
+		parts[i] = e.Name + " (" + kindLabel(e.Kind) + ")"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // moduleSummaryPreview returns the first-sentence preview of a

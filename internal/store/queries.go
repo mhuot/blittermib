@@ -277,6 +277,22 @@ func (s *Store) GetSymbolByOID(ctx context.Context, oid string) (*model.Symbol, 
 	return scanSymbol(row.Scan)
 }
 
+// SymbolsAtOID returns every symbol the given module defines at exactly
+// `oid`, name-ordered. More than one is a MIB authoring bug (an OID must
+// identify a single object); the detail pane warns when this returns ≥2.
+// Empty oid returns nil (no-OID symbols never collide on OID).
+func (s *Store) SymbolsAtOID(ctx context.Context, module, oid string) ([]model.Symbol, error) {
+	if oid == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, symbolSelectColumns+`
+		FROM symbol WHERE module_name = ? AND oid = ? ORDER BY name`, module, oid)
+	if err != nil {
+		return nil, fmt.Errorf("symbols at oid %s in %s: %w", oid, module, err)
+	}
+	return scanSymbolRows(rows)
+}
+
 // ListSymbolsByModule returns all symbols belonging to a module, ordered
 // by their OID (numeric ordering would require splitting; lexical
 // ordering is good enough at view-time).
@@ -558,54 +574,6 @@ func (s *Store) LookupByName(ctx context.Context, name string) ([]model.Symbol, 
 		return nil, fmt.Errorf("lookup by name %s: %w", name, err)
 	}
 	return scanSymbolRows(rows)
-}
-
-// HasChildren reports whether the given OID has at least one direct child
-// in the symbol table. Used by the tree API to decide whether to surface
-// an expand chevron without paying for a full children list.
-func (s *Store) HasChildren(ctx context.Context, parentOID string) (bool, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(1) FROM symbol WHERE parent_oid = ? LIMIT 1`,
-		parentOID).Scan(&n)
-	if err != nil {
-		return false, err
-	}
-	return n > 0, nil
-}
-
-// HasChildrenBatch returns a map keyed by OID indicating whether
-// each parent has at least one direct child in the symbol table.
-// One DB query total instead of len(parents) round-trips — the
-// workspace handler and the tree-fragment endpoint both need this
-// for every row at a level, and `MaxOpenConns(1)` makes serial
-// per-row queries measurable on wide modules.
-//
-// OIDs not in the input slice are absent from the result map; OIDs
-// in the input but with no children appear with a `false` value.
-func (s *Store) HasChildrenBatch(ctx context.Context, parents []string) (map[string]bool, error) {
-	out := make(map[string]bool, len(parents))
-	if len(parents) == 0 {
-		return out, nil
-	}
-	for _, p := range parents {
-		out[p] = false
-	}
-	q, args := sqlIn(`SELECT parent_oid FROM symbol WHERE parent_oid IN (`,
-		parents, `) GROUP BY parent_oid`)
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("has-children batch: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			return nil, err
-		}
-		out[p] = true
-	}
-	return out, rows.Err()
 }
 
 // CountSymbols returns the total number of symbols across all modules.
