@@ -1495,6 +1495,35 @@ const (
 	apiTreeMaxLimit     = 500
 )
 
+// treeListParams parses the tree query params shared by the level and spine
+// endpoints: the page `limit` (defaulted and clamped to the bounded range),
+// `branchesOnly` (the workspace "container map", which hides leaf objects),
+// and the kind-chip `family` (honoured only with branchesOnly; any unknown
+// value is ignored, degrading to the full map).
+func treeListParams(r *http.Request) (limit int, branchesOnly bool, family string) {
+	limit = apiTreeDefaultLimit
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > apiTreeMaxLimit {
+		limit = apiTreeMaxLimit
+	}
+	branchesOnly = r.URL.Query().Get("branches") == "1"
+	if branchesOnly {
+		switch r.URL.Query().Get("family") {
+		case "scalar":
+			family = "scalar"
+		case "table":
+			family = "table"
+		case "notif":
+			family = "notif"
+		}
+	}
+	return limit, branchesOnly, family
+}
+
 // segDisplayName resolves one folded-chain segment's display name: the
 // stored symbol name when it is symbol-backed, else the IANA canonical
 // name for its OID, else the bare numeric segment. Mirrors the per-row
@@ -1508,6 +1537,59 @@ func segDisplayName(seg store.FoldSeg) string {
 		return canon
 	}
 	return seg.Label
+}
+
+// treeItem is one folded child row of the OID trie projected for the tree
+// JSON APIs (`/api/v1/tree` and `/api/v1/tree/spine`). A run of single-child
+// nodes is path-compressed to its deepest (anchor) node: Position/NamePath
+// render the dotted seg/name path, while OID/Name/expand address the anchor.
+// DirectOID is the keyset cursor key (the direct child under the parent),
+// kept distinct from the anchor so its last segment stays a valid sibling
+// key. HasChildren is the EXPANDABLE signal (distinct from ChildCount): in
+// branches mode a table-entry has ChildCount>0 but HasChildren=false (its
+// only children are hidden leaf columns), so the chevron comes from
+// HasChildren while ChildCount drives the badge.
+type treeItem struct {
+	OID         string `json:"oid"`         // anchor OID — expand + data-oid
+	DirectOID   string `json:"directOID"`   // direct child OID — cursor + fold coverage
+	Name        string `json:"name"`        // anchor name — /s/ link
+	NamePath    string `json:"namePath"`    // dotted resolved names — display
+	Module      string `json:"module"`      // anchor module
+	Kind        string `json:"kind"`        // anchor kind
+	HasSymbol   bool   `json:"hasSymbol"`   // anchor is symbol-backed
+	HasChildren bool   `json:"hasChildren"` // anchor is expandable (has a rendered child)
+	ChildCount  int64  `json:"childCount"`  // anchor child count — badge
+	Position    string `json:"position"`    // dotted seg-path under parent
+}
+
+// projectFoldedRows maps a level's folded children into JSON items,
+// resolving each chain segment's display name (stored symbol name, else
+// IANA canonical, else the bare numeric segment). Shared by the level and
+// spine endpoints so both emit identical item shapes.
+func projectFoldedRows(children []store.FoldedNodeRow) []treeItem {
+	out := make([]treeItem, 0, len(children))
+	for _, c := range children {
+		segPath := make([]string, len(c.Chain))
+		namePath := make([]string, len(c.Chain))
+		for i, seg := range c.Chain {
+			segPath[i] = seg.Label
+			namePath[i] = segDisplayName(seg)
+		}
+		anchor := c.Anchor()
+		out = append(out, treeItem{
+			OID:         anchor.OID,
+			DirectOID:   c.DirectOID(),
+			Name:        anchor.Name,
+			NamePath:    strings.Join(namePath, "."),
+			Module:      c.ModuleName,
+			Kind:        string(c.Kind),
+			HasSymbol:   anchor.HasSymbol,
+			HasChildren: c.HasChildren(),
+			ChildCount:  c.ChildCount,
+			Position:    strings.Join(segPath, "."),
+		})
+	}
+	return out
 }
 
 // handleAPITree serves the children of an OID from the materialised
@@ -1533,6 +1615,13 @@ func (s *Server) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		s.apiError(w, r, http.StatusBadRequest, "parent must be an OID", nil)
 		return
 	}
+	// Validated request → answer a matching conditional with a fresh 304.
+	// Kept after validation so a bad request 400s instead of 304ing; the
+	// validators themselves are stamped only on the success path below.
+	etag := s.treeETag(r)
+	if treeNotModified(w, r, etag) {
+		return
+	}
 
 	// Forward cursor `after` (last OID of the prior page) or backward
 	// cursor `before` (first OID of the current window, for "show
@@ -1547,36 +1636,7 @@ func (s *Server) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	before := strings.TrimSpace(r.URL.Query().Get("before"))
 	backward := before != "" && web.SelectorLooksLikeOID(before)
 
-	limit := apiTreeDefaultLimit
-	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	if limit > apiTreeMaxLimit {
-		limit = apiTreeMaxLimit
-	}
-
-	// branches=1 (the workspace "container map") hides leaf objects so the
-	// tree is structural navigation only — the leaves are listed in the
-	// center pane. The standalone /tree browser omits it and shows every OID.
-	branchesOnly := r.URL.Query().Get("branches") == "1"
-
-	// family=scalar|table|notif (only honoured with branches=1) further
-	// prunes the container map to branches whose subtree holds that kind-
-	// chip family. The store maps it to a fixed column; any other value is
-	// ignored (no filter), so an unknown chip degrades to the full map.
-	family := ""
-	if branchesOnly {
-		switch r.URL.Query().Get("family") {
-		case "scalar":
-			family = "scalar"
-		case "table":
-			family = "table"
-		case "notif":
-			family = "notif"
-		}
-	}
+	limit, branchesOnly, family := treeListParams(r)
 
 	ctx := r.Context()
 	var (
@@ -1598,53 +1658,8 @@ func (s *Server) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Each row is one direct child of `parent`, path-compressed: a run of
-	// single-child nodes folded to its deepest (anchor) node. The client
-	// renders Position (the dotted seg-path, e.g. "1.3.6") and NamePath
-	// ("iso.org.dod") but expands / links via the anchor (OID, Name).
-	// DirectOID is the keyset cursor key (the direct child under `parent`),
-	// kept distinct from the anchor so the cursor's last segment stays a
-	// valid sibling key here. hasChildren is the EXPANDABLE signal (distinct
-	// from childCount): in branches mode a table-entry has childCount>0 but
-	// hasChildren=false (its only children are hidden leaf columns), so the
-	// chevron must come from hasChildren while childCount drives the badge.
-	type item struct {
-		OID         string `json:"oid"`         // anchor OID — expand + data-oid
-		DirectOID   string `json:"directOID"`   // direct child OID — cursor + fold coverage
-		Name        string `json:"name"`        // anchor name — /s/ link
-		NamePath    string `json:"namePath"`    // dotted resolved names — display
-		Module      string `json:"module"`      // anchor module
-		Kind        string `json:"kind"`        // anchor kind
-		HasSymbol   bool   `json:"hasSymbol"`   // anchor is symbol-backed
-		HasChildren bool   `json:"hasChildren"` // anchor is expandable (has a rendered child)
-		ChildCount  int64  `json:"childCount"`  // anchor child count — badge
-		Position    string `json:"position"`    // dotted seg-path under parent
-	}
-	out := make([]item, 0, len(children))
-	for _, c := range children {
-		// Resolve each segment's display name (stored symbol name, else
-		// IANA canonical, else the bare numeric segment) and join into the
-		// compressed seg-path / name-path. Synthetic names stay out of the
-		// table so the registry can update independently.
-		segPath := make([]string, len(c.Chain))
-		namePath := make([]string, len(c.Chain))
-		for i, seg := range c.Chain {
-			segPath[i] = seg.Label
-			namePath[i] = segDisplayName(seg)
-		}
-		anchor := c.Anchor()
-		out = append(out, item{
-			OID:         anchor.OID,
-			DirectOID:   c.DirectOID(),
-			Name:        anchor.Name,
-			NamePath:    strings.Join(namePath, "."),
-			Module:      c.ModuleName,
-			Kind:        string(c.Kind),
-			HasSymbol:   anchor.HasSymbol,
-			HasChildren: c.HasChildren(),
-			ChildCount:  c.ChildCount,
-			Position:    strings.Join(segPath, "."),
-		})
-	}
+	// single-child nodes folded to its deepest (anchor) node (see treeItem).
+	out := projectFoldedRows(children)
 
 	// Cursors: a full page implies more in that direction. The cursor is
 	// the boundary row's DIRECT child OID (not its anchor), so its last
@@ -1659,11 +1674,163 @@ func (s *Server) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Stamp validators only now — the read succeeded — and only if the trie
+	// generation didn't move mid-request (a rebuild can commit between the
+	// validator read and the page read on this single-connection pool; a
+	// page from the new generation must not be stored under the old tag —
+	// serve it fresh and let the next request revalidate against the new
+	// generation).
+	if etag != "" && etag == s.treeETag(r) {
+		treeValidatorHeaders(w, etag)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"parent":     parent,
 		"children":   out,
 		"nextAfter":  nextAfter,
 		"prevBefore": prevBefore,
+	})
+}
+
+// treeETag computes the strong cache validator for the tree APIs: the trie
+// generation — advanced by every RebuildOIDTree and anchored to wall-clock
+// seconds, so it tracks the trie's CONTENT (including content-only rebuilds
+// after an import or hot reload, where the schema version constant does NOT
+// change) and differs across database files (a wiped/recreated DB cannot
+// re-issue a previous epoch's tags) — plus the build version, which covers
+// the only other input to a rendered row: the compiled-in IANA
+// canonical-name table for synthetic segments. One validator serves every
+// tree URL: HTTP caches key entries by URL and a conditional request only
+// replays the validator stored for that same URL, so per-resource
+// uniqueness (RFC 9110) needs no per-URI component. Returns "" when the
+// generation cannot be read — serve fresh with no caching headers.
+func (s *Server) treeETag(r *http.Request) string {
+	gen, err := s.store.OIDTreeGeneration(r.Context())
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf(`"oidtree-g%d-%s"`, gen, s.version)
+}
+
+// treeValidatorHeaders stamps the cache validators on a response. Called
+// only on the two cacheable outcomes — the 304 itself and a SUCCESSFUL 200
+// body — never before the store read, so a 4xx/5xx error response can
+// never carry success validators (a conforming cache could otherwise store
+// the error and have a later 304 revalidate it as fresh). Cache-Control is
+// deliberately conservative (must-revalidate, no stored max-age): every
+// reuse revalidates, but a match returns 304 before any DB work or body
+// render. A longer max-age is a safe follow-up once a shared cache tier is
+// in play.
+func treeValidatorHeaders(w http.ResponseWriter, etag string) {
+	if etag == "" {
+		return
+	}
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
+}
+
+// treeNotModified answers a conditional request: when the client's
+// If-None-Match already names the current validator, it writes the 304
+// (re-stamping the validators, per RFC 9110 §15.4.5) and reports true — the
+// caller returns without a body. Call only AFTER request validation, so an
+// invalid request still gets its 4xx instead of a 304.
+func treeNotModified(w http.ResponseWriter, r *http.Request, etag string) bool {
+	if etag == "" {
+		return false
+	}
+	if match := r.Header.Get("If-None-Match"); match != "" && etagMatches(match, etag) {
+		treeValidatorHeaders(w, etag)
+		w.WriteHeader(http.StatusNotModified)
+		return true
+	}
+	return false
+}
+
+// etagMatches reports whether the current ETag is listed in an
+// If-None-Match header value (a comma-separated list, possibly `*` or with
+// a weak `W/` prefix). The tree ETags are strong, so a weak comparison is
+// still safe here — a `W/`-prefixed candidate is accepted on its opaque tag.
+func etagMatches(header, etag string) bool {
+	for _, cand := range strings.Split(header, ",") {
+		cand = strings.TrimSpace(cand)
+		if cand == "*" || cand == etag {
+			return true
+		}
+		if strings.TrimPrefix(cand, "W/") == etag {
+			return true
+		}
+	}
+	return false
+}
+
+// handleAPITreeSpine returns every level from the apex down to a focused
+// OID in one response — the whole set of pages the client would otherwise
+// fetch one round trip per level while expanding the spine.
+//
+//	GET /api/v1/tree/spine?focus={oid}&branches={0|1}&family={scalar|table|notif}
+//
+// Each level carries the same child items and next cursor `/api/v1/tree`
+// returns for that parent, plus an `anchored` flag when the level was opened
+// mid-way through a wide arc (the client renders a "show earlier"
+// affordance). Levels are apex-first; the client renders them and computes
+// the highlight target itself (rowFor∥deepestAncestorRow), keeping selection
+// a single source of truth. branches/family are parsed exactly as in
+// handleAPITree.
+func (s *Server) handleAPITreeSpine(w http.ResponseWriter, r *http.Request) {
+	focus := strings.TrimSpace(r.URL.Query().Get("focus"))
+	if focus == "" || !web.SelectorLooksLikeOID(focus) {
+		s.apiError(w, r, http.StatusBadRequest, "focus must be an OID", nil)
+		return
+	}
+	// Validated request → answer a matching conditional with a fresh 304.
+	// Kept after validation so a bad request 400s instead of 304ing; the
+	// validators themselves are stamped only on the success path below.
+	etag := s.treeETag(r)
+	if treeNotModified(w, r, etag) {
+		return
+	}
+
+	limit, branchesOnly, family := treeListParams(r)
+
+	spine, err := s.store.SpinePages(r.Context(), focus, branchesOnly, family, limit)
+	if err != nil {
+		s.apiError(w, r, http.StatusInternalServerError, "internal error", err)
+		return
+	}
+
+	type level struct {
+		Parent    string     `json:"parent"`
+		Children  []treeItem `json:"children"`
+		NextAfter any        `json:"nextAfter"`
+		Anchored  bool       `json:"anchored"`
+	}
+	levels := make([]level, 0, len(spine))
+	for _, lv := range spine {
+		var nextAfter any
+		// A full page implies more siblings below the window; the cursor is
+		// the boundary row's DIRECT child OID (a valid sibling key), matching
+		// handleAPITree's forward cursor.
+		if len(lv.Rows) == limit {
+			nextAfter = lv.Rows[len(lv.Rows)-1].DirectOID()
+		}
+		levels = append(levels, level{
+			Parent:    lv.Parent,
+			Children:  projectFoldedRows(lv.Rows),
+			NextAfter: nextAfter,
+			Anchored:  lv.Anchored,
+		})
+	}
+
+	// Stamp validators only now — the walk succeeded — and only if the trie
+	// generation didn't move mid-walk (SpinePages runs one query per level
+	// on a single-connection pool, so a rebuild can commit between levels;
+	// a spine mixing two generations must not be stored under either tag —
+	// serve it fresh and let the next request revalidate).
+	if etag != "" && etag == s.treeETag(r) {
+		treeValidatorHeaders(w, etag)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"focus":  focus,
+		"levels": levels,
 	})
 }
 

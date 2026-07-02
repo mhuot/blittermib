@@ -10,6 +10,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/no42-org/blittermib/internal/model"
 )
@@ -39,6 +42,29 @@ type NodeRow struct {
 	Kind        model.SymbolKind
 	HasSymbol   bool
 	HasChildren bool
+}
+
+// OIDTreeGeneration returns a monotonic token advanced by every
+// RebuildOIDTree — i.e. whenever the trie's CONTENT is (re)materialised,
+// including content-only rebuilds after an import or hot reload. Unlike
+// oidTreeVersion (a fixed schema-shape marker, re-stamped unchanged on a
+// content rebuild), it changes whenever the browsable data changes, so it
+// is the correct cache-validity token for the tree endpoints (an ETag
+// component). The value is anchored to wall-clock seconds (see the bump in
+// RebuildOIDTree), so it also differs ACROSS database files: a wiped and
+// re-imported DB cannot land on a previous epoch's value and re-issue an
+// old ETag for different content. 0 when the trie has never been built.
+func (s *Store) OIDTreeGeneration(ctx context.Context) (int64, error) {
+	var gen int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT value FROM schema_meta WHERE key = 'oid_tree_generation'`).Scan(&gen)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read oid tree generation: %w", err)
+	}
+	return gen, nil
 }
 
 // OIDTreeStale reports whether oid_node needs a (re)build because its
@@ -180,6 +206,26 @@ func (s *Store) RebuildOIDTree(ctx context.Context) error {
 		INSERT INTO schema_meta(key, value) VALUES ('oid_tree_version', ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, oidTreeVersion); err != nil {
 		return fmt.Errorf("rebuild oid tree: mark version: %w", err)
+	}
+
+	// Advance a monotonic generation on every rebuild so the tree-API cache
+	// validator changes whenever the trie's CONTENT changes. The version
+	// above is a fixed shape marker (re-stamped unchanged on a content-only
+	// rebuild), so it cannot serve that role — an import or hot reload
+	// rewrites oid_node while leaving the version at its constant.
+	//
+	// The value is MAX(previous+1, now): anchoring to wall-clock seconds
+	// makes the token unique across DATABASE FILES too — a plain counter
+	// restarts at 1 in a wiped/recreated DB, so two DB lifetimes with equal
+	// rebuild counts would re-issue byte-identical ETags for different
+	// content and conditional requests would false-304 to a stale tree.
+	// previous+1 keeps it strictly advancing even under clock skew or two
+	// rebuilds within the same second.
+	now := time.Now().Unix()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO schema_meta(key, value) VALUES ('oid_tree_generation', ?)
+		ON CONFLICT(key) DO UPDATE SET value = MAX(CAST(value AS INTEGER) + 1, ?)`, now, now); err != nil {
+		return fmt.Errorf("rebuild oid tree: bump generation: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -422,6 +468,165 @@ func (s *Store) ListNodeChildrenFolded(ctx context.Context, parentOID string, af
 // each with its single-child run folded.
 func (s *Store) ListNodeChildrenFoldedBefore(ctx context.Context, parentOID string, beforeSeg int64, limit int, branchesOnly bool, family string) ([]FoldedNodeRow, error) {
 	return s.foldChildren(ctx, parentOID, "<", "DESC", beforeSeg, limit, branchesOnly, family)
+}
+
+// SpineLevel is one level of a preloaded OID-tree spine: the folded
+// children of Parent, exactly as ListNodeChildrenFolded would return them
+// for a single lazy expansion. Anchored is true when the page was fetched
+// anchored at the spine child (a wide level where earlier siblings were
+// skipped) — the caller renders a "show earlier" affordance for it, matching
+// the lazy loadAnchored path.
+type SpineLevel struct {
+	Parent   string
+	Rows     []FoldedNodeRow
+	Anchored bool
+}
+
+// spineMaxDepth backstops the spine walk against a data anomaly; real OID
+// depth in the corpus is well under this. Mirrors the client guard.
+const spineMaxDepth = 64
+
+// SpinePages returns every level from the apex down to `focus` in one call —
+// the whole set of pages the client's expandSpineTo would otherwise fetch
+// one round trip per level. It walks the same way that loop does: list a
+// level's folded children, find the row whose run carries the next spine
+// segment, and descend into that row's ANCHOR (folding means the next parent
+// is the anchor OID, not the next numeric prefix). A wide level whose spine
+// child is beyond the first page is re-fetched anchored at the child (the
+// `loadAnchored` "jump to the child's page" behaviour), and the level is
+// marked Anchored. branchesOnly/family carry through unchanged, so a
+// preloaded spine renders identically to a hand-expanded one.
+//
+// The walk stops (and does not descend further) when the spine child is
+// absent from the level (a filtered leaf, or an unknown focus — the level
+// still renders as far as the trie reaches), when a folded row's run already
+// carries focus, or when the deepest reachable container is a tree leaf. The
+// highlight target is left to the caller/client (rowFor∥deepestAncestorRow
+// over the rendered rows), so it stays a single source of truth.
+func (s *Store) SpinePages(ctx context.Context, focus string, branchesOnly bool, family string, limit int) ([]SpineLevel, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	var levels []SpineLevel
+	parent := ""
+	for i := 0; i < spineMaxDepth; i++ {
+		child := spineChild(parent, focus)
+		if child == "" {
+			// focus == parent (or not below it): focus is already rendered
+			// as a row in the level just added — do not expand its children.
+			break
+		}
+		rows, err := s.ListNodeChildrenFolded(ctx, parent, -1, limit, branchesOnly, family)
+		if err != nil {
+			return nil, err
+		}
+		cs := lastSegInt(child)
+		row := findRowBySeg(rows, cs)
+		anchored := false
+		// Re-fetch anchored only when the first page was FULL and the child
+		// wasn't on it — then the child may be on a later page (a wide level).
+		// A short first page already enumerated every child, so a missing
+		// child is genuinely absent; re-fetching would just repeat the scan.
+		if row == nil && cs > 0 && len(rows) == limit {
+			// Wide level: the spine child is past the first page. Re-fetch the
+			// keyset page anchored at the child (so it is the first row) and
+			// flag the level so the client offers "show earlier".
+			rows2, err := s.ListNodeChildrenFolded(ctx, parent, cs-1, limit, branchesOnly, family)
+			if err != nil {
+				return nil, err
+			}
+			if r := findRowBySeg(rows2, cs); r != nil {
+				rows, row, anchored = rows2, r, true
+			}
+		}
+		levels = append(levels, SpineLevel{Parent: parent, Rows: rows, Anchored: anchored})
+		if row == nil {
+			break // spine child absent (filtered leaf / broke / unknown focus)
+		}
+		if rowCoversOID(*row, focus) {
+			break // the folded run already carries focus — it is rendered here
+		}
+		if !row.Expandable {
+			break // deepest reachable container (focus is a hidden leaf under it)
+		}
+		// The anchor is always strictly deeper than `parent` (the row's chain
+		// starts at a direct child), so the walk provably advances each
+		// iteration; spineMaxDepth above is the sole anomaly backstop.
+		parent = row.Anchor().OID
+	}
+	return levels, nil
+}
+
+// spineChild returns the direct child of `parent` on the path to `focus` —
+// `focus` truncated to one more segment than `parent`. Returns "" when
+// `parent` is not a strict prefix of `focus` (including parent == focus).
+func spineChild(parent, focus string) string {
+	if parent == focus {
+		return ""
+	}
+	var rest string
+	if parent == "" {
+		rest = focus
+	} else {
+		if !strings.HasPrefix(focus, parent+".") {
+			return ""
+		}
+		rest = focus[len(parent)+1:]
+	}
+	seg := rest
+	if i := strings.IndexByte(rest, '.'); i >= 0 {
+		seg = rest[:i]
+	}
+	if seg == "" {
+		return ""
+	}
+	if parent == "" {
+		return seg
+	}
+	return parent + "." + seg
+}
+
+// lastSegInt parses an OID's trailing segment as an integer (-1 on failure),
+// matching the keyset's numeric sibling ordering.
+func lastSegInt(oid string) int64 {
+	seg := oid
+	if i := strings.LastIndexByte(oid, '.'); i >= 0 {
+		seg = oid[i+1:]
+	}
+	n, err := strconv.ParseInt(seg, 10, 64)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+// findRowBySeg returns the folded row for the direct child with segment
+// `seg` (rows are keyed by their direct child's Seg, unique per level), or
+// nil when no such row is in the page.
+func findRowBySeg(rows []FoldedNodeRow, seg int64) *FoldedNodeRow {
+	for i := range rows {
+		if rows[i].Seg == seg {
+			return &rows[i]
+		}
+	}
+	return nil
+}
+
+// rowCoversOID reports whether a folded row's run spans `oid` — its direct
+// child is an ancestor-or-equal of `oid` and its anchor is a
+// descendant-or-equal. Mirrors tree.js rowCovers: true when the row already
+// represents `oid` (it was folded into the run).
+func rowCoversOID(row FoldedNodeRow, oid string) bool {
+	return oidUnderPrefix(oid, row.DirectOID()) && oidUnderPrefix(row.Anchor().OID, oid)
+}
+
+// oidUnderPrefix reports whether `oid` is `prefix` or a descendant of it.
+// NOTE: this mirrors web.OIDUnderPrefix (not imported — the view layer sits
+// above the store) EXCEPT that an EMPTY prefix matches nothing here;
+// rowCoversOID never passes one. Align the semantics before reusing this
+// more broadly.
+func oidUnderPrefix(oid, prefix string) bool {
+	return oid == prefix || strings.HasPrefix(oid, prefix+".")
 }
 
 // ListNodeChildrenBefore returns up to `limit` children of `parentOID`
