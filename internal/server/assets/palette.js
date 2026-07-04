@@ -113,12 +113,18 @@
 			}
 		}
 
+		// clearDom tears the listbox back to its empty state — shared by
+		// render's no-hits branch and reset so the two can't drift.
+		function clearDom() {
+			opts.list.innerHTML = '';
+			ctl.active = -1;
+			opts.input.removeAttribute('aria-activedescendant');
+			setExpanded(false);
+		}
+
 		function render() {
 			if (ctl.hits.length === 0) {
-				opts.list.innerHTML = '';
-				ctl.active = -1;
-				opts.input.removeAttribute('aria-activedescendant');
-				setExpanded(false);
+				clearDom();
 				opts.onRender(ctl);
 				return;
 			}
@@ -140,10 +146,8 @@
 
 		async function search(q) {
 			const seq = ++lastSeq;
-			// Abort any request the previous keystroke left in flight so the
-			// server isn't left scoring a query whose results we'll discard —
-			// under the store's single connection those stack up and stall
-			// the whole site.
+			// Supersede the previous keystroke's still-in-flight request so
+			// it doesn't keep scoring a query we're about to replace.
 			if (inflight) inflight.abort();
 			const trimmed = q.trim();
 			// Per-token, like the server: "a b" has no usable token and
@@ -203,10 +207,11 @@
 			if (ctl.active >= 0) ctl.navigate(ctl.active);
 		};
 
-		// cancelInFlight aborts the current fetch (if any), invalidates its
-		// sequence so a late response is ignored, and drops the pending
-		// debounce — so once a surface is dismissed nothing repopulates it
-		// and no abandoned request keeps occupying the server's connection.
+		// cancelInFlight stops all pending search work — the aborted fetch,
+		// the stale-response guard (lastSeq), and the queued debounce — so a
+		// dismissed surface can't be repopulated by a late response and no
+		// abandoned request keeps holding the store's single DB connection.
+		// Every dismissal path (clear, reset) routes through here.
 		function cancelInFlight() {
 			if (inflight) {
 				inflight.abort();
@@ -216,26 +221,19 @@
 			clearTimeout(debounce);
 		}
 
-		// clear empties the results and hides the dropdown (the hero's
-		// Escape path). It cancels in-flight work too: otherwise a slow
-		// response arriving after dismissal re-renders the dropdown the
-		// user just closed, and the request lingers on the lone DB
-		// connection.
+		// clear empties the results and re-renders the empty state (the hero
+		// Escape path); reset does the same without the empty-state chrome,
+		// for (re)opening a surface with a blank query. Both cancel first.
 		ctl.clear = function () {
 			cancelInFlight();
 			ctl.hits = [];
 			render();
 		};
 
-		// reset empties the model without rendering empty-state chrome —
-		// used when (re)opening a surface with a blank query.
 		ctl.reset = function () {
 			cancelInFlight();
 			ctl.hits = [];
-			ctl.active = -1;
-			opts.list.innerHTML = '';
-			opts.input.removeAttribute('aria-activedescendant');
-			setExpanded(false);
+			clearDom();
 		};
 
 		opts.input.addEventListener('input', () => {
@@ -269,8 +267,7 @@
 	function hide() {
 		if (!overlay) return;
 		overlay.dataset.state = 'hidden';
-		// Cancel any pending debounce/fetch — a request nobody will see
-		// shouldn't keep occupying the server's single DB connection.
+		// Dismiss cancels pending search work (see cancelInFlight).
 		if (modalCtl) modalCtl.reset();
 		if (returnFocusTo && typeof returnFocusTo.focus === 'function') {
 			try { returnFocusTo.focus(); } catch (_) { /* node removed */ }
@@ -445,10 +442,13 @@
 					ctl.navigate(ctl.active);
 				}
 			} else if (e.key === 'Escape') {
-				if (dropdown.dataset.state === 'visible') {
-					e.preventDefault();
-					ctl.clear();
-				}
+				// Cancel any pending or in-flight search, even before results
+				// have rendered — a fetch dismissed mid-debounce must still be
+				// aborted. Suppress the browser's native field-clear only when
+				// there was an open dropdown to dismiss.
+				const wasOpen = dropdown.dataset.state === 'visible';
+				ctl.clear();
+				if (wasOpen) e.preventDefault();
 			}
 		});
 	}
