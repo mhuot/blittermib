@@ -147,12 +147,13 @@
 			if (inflight) inflight.abort();
 			const trimmed = q.trim();
 			// Per-token, like the server: "a b" has no usable token and
-			// would be declined, so don't send it. Array.from counts code
-			// points (runes), matching the server's count — .length would
-			// count an astral-plane character as 2 and leak it past the gate.
+			// would be declined, so don't send it. TOKEN_SPLIT_RE keeps
+			// only ASCII word/dot characters — the same alphabet as the
+			// server's tokenizer — so .length is an exact character count
+			// here (non-ASCII input never reaches a token).
 			const usable = trimmed
 				.split(TOKEN_SPLIT_RE)
-				.some((tok) => Array.from(tok).length >= MIN_QUERY_LEN);
+				.some((tok) => tok.length >= MIN_QUERY_LEN);
 			if (!usable && !OID_QUERY_RE.test(trimmed)) {
 				inflight = undefined;
 				ctl.hits = [];

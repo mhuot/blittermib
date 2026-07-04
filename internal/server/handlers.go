@@ -1447,6 +1447,12 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			web.InternalError("search timed out — try a longer or more specific query"))
 		return
 	}
+	if errors.Is(err, context.Canceled) {
+		// The client went away (typeahead abort, navigation) — there is
+		// nobody left to render for, and it isn't a server fault worth
+		// an error log.
+		return
+	}
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -1512,6 +1518,12 @@ func (s *Server) handleAPISearch(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		s.apiError(w, r, http.StatusGatewayTimeout, "search timed out", nil)
+		return
+	}
+	if errors.Is(err, context.Canceled) {
+		// Expected in steady state: the palette aborts the in-flight
+		// request on every superseded keystroke. Not an error, and the
+		// aborted client cannot read a response anyway.
 		return
 	}
 	if err != nil {
