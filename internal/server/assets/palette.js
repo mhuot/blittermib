@@ -18,10 +18,14 @@
 	const MAX_RESULTS = 25;
 	// Mirror of the server's gate (rationale: internal/store/search.go,
 	// minFTSTokenLen) — skip queries the server would decline anyway.
-	// OID-shaped queries (digits/dots, optional leading dot) are exempt
-	// there too: they take the cheap indexed path, so "1" must fetch.
+	// The floor is per token, like the server's. OID-shaped queries
+	// (digit runs separated by single dots, optional leading dot) are
+	// exempt there too: they take the cheap indexed path, so "1" must
+	// fetch — but the shape must match the server's oidPrefixQuery,
+	// which rejects trailing dots and empty segments.
 	const MIN_QUERY_LEN = 2;
-	const OID_QUERY_RE = /^\.?[0-9][0-9.]*$/;
+	const OID_QUERY_RE = /^\.?[0-9]+(\.[0-9]+)*$/;
+	const TOKEN_SPLIT_RE = /[^A-Za-z0-9_.]+/;
 
 	const TEMPLATE = `
 <div class="palette-overlay" data-state="hidden" role="dialog" aria-modal="true" aria-labelledby="palette-input">
@@ -142,10 +146,14 @@
 			// the whole site.
 			if (inflight) inflight.abort();
 			const trimmed = q.trim();
-			// Array.from counts code points (runes), matching the server's
-			// count — trimmed.length would count an astral-plane character
-			// as 2 and leak it past the gate.
-			if (Array.from(trimmed).length < MIN_QUERY_LEN && !OID_QUERY_RE.test(trimmed)) {
+			// Per-token, like the server: "a b" has no usable token and
+			// would be declined, so don't send it. Array.from counts code
+			// points (runes), matching the server's count — .length would
+			// count an astral-plane character as 2 and leak it past the gate.
+			const usable = trimmed
+				.split(TOKEN_SPLIT_RE)
+				.some((tok) => Array.from(tok).length >= MIN_QUERY_LEN);
+			if (!usable && !OID_QUERY_RE.test(trimmed)) {
 				inflight = undefined;
 				ctl.hits = [];
 				render();

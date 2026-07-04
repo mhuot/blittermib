@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -14,7 +13,8 @@ import (
 // ErrQueryTooShort is returned by Search when the query contains no
 // usable FTS token (see minFTSTokenLen) — callers can distinguish
 // "declined as too broad" from a genuinely empty result set.
-var ErrQueryTooShort = errors.New("search query too short: needs a word of at least 2 characters")
+var ErrQueryTooShort = fmt.Errorf(
+	"search query too short: needs a word of at least %d characters", minFTSTokenLen)
 
 const (
 	// minFTSTokenLen is the shortest token sanitizeFTS will emit.
@@ -264,11 +264,12 @@ func sanitizeFTS(q string) string {
 	var b strings.Builder
 	var word strings.Builder
 	flush := func() {
-		if utf8.RuneCountInString(word.String()) >= minFTSTokenLen {
+		w := word.String()
+		if utf8.RuneCountInString(w) >= minFTSTokenLen {
 			if b.Len() > 0 {
 				b.WriteByte(' ')
 			}
-			b.WriteString(word.String())
+			b.WriteString(w)
 			b.WriteByte('*')
 		}
 		word.Reset()
