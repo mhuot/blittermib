@@ -203,23 +203,34 @@
 			if (ctl.active >= 0) ctl.navigate(ctl.active);
 		};
 
-		ctl.clear = function () {
-			ctl.hits = [];
-			render();
-		};
-
-		// reset empties the model without rendering empty-state chrome —
-		// used when (re)opening a surface with a blank query. Aborting the
-		// in-flight fetch and bumping lastSeq here means a request left
-		// pending when the surface closed can neither keep the server busy
-		// nor render its stale hits into the reopened, blank surface.
-		ctl.reset = function () {
+		// cancelInFlight aborts the current fetch (if any), invalidates its
+		// sequence so a late response is ignored, and drops the pending
+		// debounce — so once a surface is dismissed nothing repopulates it
+		// and no abandoned request keeps occupying the server's connection.
+		function cancelInFlight() {
 			if (inflight) {
 				inflight.abort();
 				inflight = undefined;
 			}
 			lastSeq++;
 			clearTimeout(debounce);
+		}
+
+		// clear empties the results and hides the dropdown (the hero's
+		// Escape path). It cancels in-flight work too: otherwise a slow
+		// response arriving after dismissal re-renders the dropdown the
+		// user just closed, and the request lingers on the lone DB
+		// connection.
+		ctl.clear = function () {
+			cancelInFlight();
+			ctl.hits = [];
+			render();
+		};
+
+		// reset empties the model without rendering empty-state chrome —
+		// used when (re)opening a surface with a blank query.
+		ctl.reset = function () {
+			cancelInFlight();
 			ctl.hits = [];
 			ctl.active = -1;
 			opts.list.innerHTML = '';
