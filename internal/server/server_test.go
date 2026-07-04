@@ -16,6 +16,7 @@ import (
 
 	"github.com/no42-org/blittermib/internal/model"
 	"github.com/no42-org/blittermib/internal/store"
+	"github.com/no42-org/blittermib/internal/store/storetest"
 )
 
 func min(a, b int) int {
@@ -33,47 +34,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	if err := st.ReplaceModule(context.Background(),
-		&model.Module{Name: "IF-MIB", OIDRoot: "1.3.6.1.2.1.31", ParseStatus: model.ParseStatusClean,
-			Description: "Interfaces MIB."},
-		[]model.Symbol{
-			{
-				ModuleName: "IF-MIB", Name: "ifTable",
-				OID: "1.3.6.1.2.1.2.2", ParentOID: "1.3.6.1.2.1.2",
-				Kind: model.KindTable, Syntax: "SEQUENCE OF IfEntry",
-				Access: model.AccessNotAccessible, Status: model.StatusCurrent,
-				Description: "A list of interface entries.",
-			},
-			{
-				ModuleName: "IF-MIB", Name: "ifEntry",
-				OID: "1.3.6.1.2.1.2.2.1", ParentOID: "1.3.6.1.2.1.2.2",
-				Kind: model.KindTableEntry, Syntax: "IfEntry",
-				Access: model.AccessNotAccessible, Status: model.StatusCurrent,
-				IndexColumns: []string{"ifIndex"},
-			},
-			{
-				ModuleName: "IF-MIB", Name: "ifIndex",
-				OID: "1.3.6.1.2.1.2.2.1.1", ParentOID: "1.3.6.1.2.1.2.2.1",
-				Kind: model.KindColumn, Syntax: "InterfaceIndex",
-				Access: model.AccessReadOnly, Status: model.StatusCurrent,
-			},
-			{
-				ModuleName: "IF-MIB", Name: "ifInOctets",
-				OID: "1.3.6.1.2.1.2.2.1.10", ParentOID: "1.3.6.1.2.1.2.2.1",
-				Kind: model.KindColumn, Syntax: "Counter32",
-				Access: model.AccessReadOnly, Status: model.StatusCurrent,
-				Units: "octets", Description: "The total number of octets received on the interface.",
-			},
-		},
-		[]model.Reference{
-			{
-				SourceModule: "IF-MIB", SourceName: "ifPacketGroup",
-				TargetModule: "IF-MIB", TargetName: "ifInOctets",
-				Kind: model.RefGroupMember,
-			},
-		},
-		nil,
-	); err != nil {
+	if err := storetest.SeedIFMIB(context.Background(), st); err != nil {
 		t.Fatalf("seed store: %v", err)
 	}
 
