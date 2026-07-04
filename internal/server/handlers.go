@@ -24,6 +24,23 @@ import (
 	"github.com/no42-org/blittermib/internal/web"
 )
 
+const (
+	// searchTimeout bounds a single search request's hold on the store's
+	// single (MaxOpenConns=1) connection. Without it, one pathological
+	// short-prefix FTS query can squat on that connection until the
+	// upstream proxy's ~60s read timeout, serializing and stalling every
+	// other request behind it. Interrupting at 5s frees the connection.
+	searchTimeout = 5 * time.Second
+
+	// minSearchQueryLen is the shortest text query the typeahead API will
+	// send through FTS. sanitizeFTS turns each token into a prefix match,
+	// so a one-rune query becomes `p*`, which bm25-scores a large fraction
+	// of the corpus (seconds per query) before LIMIT applies. Gating it
+	// keeps the as-you-type path cheap. OID-shaped queries take the
+	// indexed LIKE path instead and are exempt.
+	minSearchQueryLen = 2
+)
+
 // underMIBRoot reports whether the absolute form of `p` lives at
 // or under the absolute form of the server's MIB corpus root.
 // Empty `p` and an empty root are rejected; resolving `.` ancestor
@@ -1434,7 +1451,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		render(w, r, http.StatusOK, web.SearchEmpty())
 		return
 	}
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), searchTimeout)
+	defer cancel()
 	hits := s.searchWithExactMatch(ctx, q, 50)
 	if len(hits) == 0 {
 		// Fall through to "did you mean": Levenshtein-against-name
@@ -1488,7 +1506,17 @@ func (s *Server) handleAPISearch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"hits": []any{}})
 		return
 	}
-	hits := s.searchWithExactMatch(r.Context(), q, 25)
+	// Gate ultra-short FTS prefixes (see minSearchQueryLen): the typeahead
+	// fires one request per keystroke, and a `p*`-class query bm25-scores a
+	// huge slice of the corpus. OID-shaped queries use the cheap indexed
+	// path, so exempt them.
+	if _, isOID := oidPrefixQuery(q); !isOID && len([]rune(q)) < minSearchQueryLen {
+		writeJSON(w, http.StatusOK, map[string]any{"hits": []any{}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), searchTimeout)
+	defer cancel()
+	hits := s.searchWithExactMatch(ctx, q, 25)
 	writeJSON(w, http.StatusOK, map[string]any{"hits": hits})
 }
 

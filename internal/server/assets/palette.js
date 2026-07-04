@@ -14,8 +14,13 @@
 	'use strict';
 
 	const SEARCH_URL = '/api/v1/search';
-	const DEBOUNCE_MS = 80;
+	const DEBOUNCE_MS = 150;
 	const MAX_RESULTS = 25;
+	// MIN_QUERY_LEN mirrors the server's minSearchQueryLen: a one-character
+	// query becomes the FTS prefix `p*`, which scores a large share of the
+	// corpus. Skipping it client-side avoids firing a request we know the
+	// server will decline.
+	const MIN_QUERY_LEN = 2;
 
 	const TEMPLATE = `
 <div class="palette-overlay" data-state="hidden" role="dialog" aria-modal="true" aria-labelledby="palette-input">
@@ -64,6 +69,7 @@
 	function searchController(opts) {
 		let debounce;
 		let lastSeq = 0;
+		let inflight; // AbortController for the current fetch, if any
 
 		const ctl = {
 			hits: [],
@@ -129,22 +135,38 @@
 
 		async function search(q) {
 			const seq = ++lastSeq;
-			if (!q.trim()) {
+			// Abort any request the previous keystroke left in flight so the
+			// server isn't left scoring a query whose results we'll discard —
+			// under the store's single connection those stack up and stall
+			// the whole site.
+			if (inflight) inflight.abort();
+			const trimmed = q.trim();
+			// Sub-threshold and empty queries never reach the server; the
+			// server declines them too, so this just saves the round trip.
+			if (trimmed.length < MIN_QUERY_LEN) {
+				inflight = undefined;
 				ctl.hits = [];
 				render();
 				return;
 			}
+			const controller = new AbortController();
+			inflight = controller;
 			try {
-				const res = await fetch(SEARCH_URL + '?q=' + encodeURIComponent(q));
+				const res = await fetch(SEARCH_URL + '?q=' + encodeURIComponent(q), {
+					signal: controller.signal,
+				});
 				if (!res.ok) throw new Error('search ' + res.status);
 				const data = await res.json();
 				if (seq !== lastSeq) return; // stale response, ignore
 				ctl.hits = (data.hits || []).slice(0, MAX_RESULTS);
 				render();
 			} catch (err) {
+				if (err && err.name === 'AbortError') return; // superseded, expected
 				console.warn(opts.warnLabel, err);
 				ctl.hits = [];
 				render();
+			} finally {
+				if (inflight === controller) inflight = undefined;
 			}
 		}
 
