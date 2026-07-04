@@ -16,11 +16,12 @@
 	const SEARCH_URL = '/api/v1/search';
 	const DEBOUNCE_MS = 150;
 	const MAX_RESULTS = 25;
-	// MIN_QUERY_LEN mirrors the server's minSearchQueryLen: a one-character
-	// query becomes the FTS prefix `p*`, which scores a large share of the
-	// corpus. Skipping it client-side avoids firing a request we know the
-	// server will decline.
+	// Mirror of the server's gate (rationale: internal/store/search.go,
+	// minFTSTokenLen) — skip queries the server would decline anyway.
+	// OID-shaped queries (digits/dots, optional leading dot) are exempt
+	// there too: they take the cheap indexed path, so "1" must fetch.
 	const MIN_QUERY_LEN = 2;
+	const OID_QUERY_RE = /^\.?[0-9][0-9.]*$/;
 
 	const TEMPLATE = `
 <div class="palette-overlay" data-state="hidden" role="dialog" aria-modal="true" aria-labelledby="palette-input">
@@ -141,9 +142,10 @@
 			// the whole site.
 			if (inflight) inflight.abort();
 			const trimmed = q.trim();
-			// Sub-threshold and empty queries never reach the server; the
-			// server declines them too, so this just saves the round trip.
-			if (trimmed.length < MIN_QUERY_LEN) {
+			// Array.from counts code points (runes), matching the server's
+			// count — trimmed.length would count an astral-plane character
+			// as 2 and leak it past the gate.
+			if (Array.from(trimmed).length < MIN_QUERY_LEN && !OID_QUERY_RE.test(trimmed)) {
 				inflight = undefined;
 				ctl.hits = [];
 				render();
@@ -198,8 +200,17 @@
 		};
 
 		// reset empties the model without rendering empty-state chrome —
-		// used when (re)opening a surface with a blank query.
+		// used when (re)opening a surface with a blank query. Aborting the
+		// in-flight fetch and bumping lastSeq here means a request left
+		// pending when the surface closed can neither keep the server busy
+		// nor render its stale hits into the reopened, blank surface.
 		ctl.reset = function () {
+			if (inflight) {
+				inflight.abort();
+				inflight = undefined;
+			}
+			lastSeq++;
+			clearTimeout(debounce);
 			ctl.hits = [];
 			ctl.active = -1;
 			opts.list.innerHTML = '';
@@ -238,6 +249,9 @@
 	function hide() {
 		if (!overlay) return;
 		overlay.dataset.state = 'hidden';
+		// Cancel any pending debounce/fetch — a request nobody will see
+		// shouldn't keep occupying the server's single DB connection.
+		if (modalCtl) modalCtl.reset();
 		if (returnFocusTo && typeof returnFocusTo.focus === 'function') {
 			try { returnFocusTo.focus(); } catch (_) { /* node removed */ }
 		}

@@ -431,11 +431,21 @@ func TestAPISearchMinLength(t *testing.T) {
 	// Single-character text query is gated: even though seeded symbols
 	// (ifTable, ifIndex, …) start with "i", the server declines it.
 	if n := hitCount("i"); n != 0 {
-		t.Errorf("q=%q hits = %d, want 0 (gated below minSearchQueryLen)", "i", n)
+		t.Errorf("q=%q hits = %d, want 0 (gated below the token floor)", "i", n)
+	}
+	// The floor applies per FTS token, not to the raw query length —
+	// punctuation splits tokens, so "p-" must not sneak through as `p*`.
+	if n := hitCount("p-"); n != 0 {
+		t.Errorf("q=%q hits = %d, want 0 (sub-floor token after tokenization)", "p-", n)
 	}
 	// Two characters clears the floor and runs FTS against the seeded IF-MIB.
 	if n := hitCount("if"); n == 0 {
 		t.Errorf("q=%q hits = 0, want > 0 (FTS should match if*)", "if")
+	}
+	// Mixed queries keep their usable tokens: the sub-floor "x" is
+	// dropped and "ifIn" still matches.
+	if n := hitCount("ifIn x"); n == 0 {
+		t.Errorf("q=%q hits = 0, want > 0 (sub-floor token dropped, not fatal)", "ifIn x")
 	}
 	// OID-shaped queries are exempt from the floor — a single "1" is a
 	// cheap indexed LIKE against the seeded 1.3.6.* OIDs, not an FTS scan.

@@ -259,6 +259,37 @@ func TestSearchFTS(t *testing.T) {
 	}
 }
 
+func TestSearchQueryTooShort(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	if err := s.ReplaceModule(ctx, sampleModule(), sampleSymbols(), nil, nil); err != nil {
+		t.Fatalf("ReplaceModule: %v", err)
+	}
+
+	// Queries whose every token is under the floor are declined with a
+	// distinguishable sentinel, not treated as "no results".
+	for _, q := range []string{"i", "p-", "a b"} {
+		if _, err := s.Search(ctx, q, 10); !errors.Is(err, ErrQueryTooShort) {
+			t.Errorf("Search(%q) err = %v, want ErrQueryTooShort", q, err)
+		}
+	}
+
+	// A blank query stays a silent no-op (nil, nil) — nothing was asked.
+	if hits, err := s.Search(ctx, "   ", 10); err != nil || hits != nil {
+		t.Errorf("Search(blank) = (%v, %v), want (nil, nil)", hits, err)
+	}
+
+	// Mixed queries survive: the sub-floor token is dropped and the
+	// remaining token still searches.
+	hits, err := s.Search(ctx, "octets x", 10)
+	if err != nil {
+		t.Fatalf("Search(mixed): %v", err)
+	}
+	if len(hits) == 0 {
+		t.Error("Search(\"octets x\") returned no hits; want octets* matches")
+	}
+}
+
 func TestSearchByOIDPrefix(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
@@ -347,6 +378,13 @@ func TestSanitizeFTS(t *testing.T) {
 		{"if in oct", "if* in* oct*"},
 		{"foo:bar", "foo* bar*"},
 		{"\"injection\"--stuff", "injection* stuff*"},
+		// Sub-floor tokens are dropped, not just short whole queries —
+		// punctuation splits tokens, so "p-" would otherwise still
+		// compile to the pathological one-rune prefix `p*`.
+		{"p", ""},
+		{"p-", ""},
+		{"p q", ""},
+		{"palo a", "palo*"},
 	}
 	for _, c := range cases {
 		if got := sanitizeFTS(c.in); got != c.want {
