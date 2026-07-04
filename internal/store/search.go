@@ -56,8 +56,9 @@ type SearchHit struct {
 // callers should prefer GetSymbol / GetSymbolByOID.
 //
 // Queries with no usable token return ErrQueryTooShort, and each call
-// is bounded by ftsSearchTimeout (a timeout surfaces as an error
-// wrapping context.DeadlineExceeded).
+// is bounded by ftsSearchTimeout — a timeout satisfies
+// errors.Is(err, context.DeadlineExceeded) (it may arrive wrapped from
+// the initial query or bare from row iteration).
 func (s *Store) Search(ctx context.Context, query string, limit int) ([]SearchHit, error) {
 	if limit <= 0 {
 		limit = 25
