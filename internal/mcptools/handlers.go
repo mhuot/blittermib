@@ -59,6 +59,10 @@ func (h *handlers) searchMIBs(ctx context.Context, _ *mcp.CallToolRequest, in se
 	}
 	hits, err := h.st.Search(ctx, in.Query, limit)
 	if err != nil {
+		// Deliberate: store.ErrQueryTooShort (and a timeout) propagate
+		// as descriptive tool errors rather than an empty hit list — an
+		// LLM caller reading "query too short" retries with a longer
+		// query, whereas empty hits would read as "nothing exists".
 		return nil, searchOut{}, err
 	}
 	return nil, searchOut{Hits: toHitViews(hits)}, nil
