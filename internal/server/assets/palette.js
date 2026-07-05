@@ -18,14 +18,16 @@
 	const MAX_RESULTS = 25;
 	// Mirror of the server's gate (rationale: internal/store/search.go,
 	// minFTSTokenLen) — skip queries the server would decline anyway.
-	// The floor is per token, like the server's. OID-shaped queries
-	// (digit runs separated by single dots, optional leading dot) are
-	// exempt there too: they take the cheap indexed path, so "1" must
-	// fetch — but the shape must match the server's oidPrefixQuery,
-	// which rejects trailing dots and empty segments.
+	// The floor is per token, like the server's. A '.' is a token
+	// boundary here too (the server's sanitizeFTS treats it as one), so a
+	// trailing-dot OID transient like "1.3.6." has no usable token and is
+	// gated rather than forwarded. OID-shaped queries are exempt via
+	// OID_QUERY_RE: they take the cheap indexed path, so "1" must fetch —
+	// but the shape must match the server's oidPrefixQuery, which rejects
+	// trailing dots and empty segments.
 	const MIN_QUERY_LEN = 2;
 	const OID_QUERY_RE = /^\.?[0-9]+(\.[0-9]+)*$/;
-	const TOKEN_SPLIT_RE = /[^A-Za-z0-9_.]+/;
+	const TOKEN_SPLIT_RE = /[^A-Za-z0-9_]+/;
 
 	const TEMPLATE = `
 <div class="palette-overlay" data-state="hidden" role="dialog" aria-modal="true" aria-labelledby="palette-input">
@@ -148,9 +150,9 @@
 			const trimmed = q.trim();
 			// Per-token, like the server: "a b" has no usable token and
 			// would be declined, so don't send it. TOKEN_SPLIT_RE keeps
-			// only ASCII word/dot characters — the same alphabet as the
-			// server's tokenizer — so .length is an exact character count
-			// here (non-ASCII input never reaches a token).
+			// only ASCII word characters (dot is a separator, matching the
+			// server's sanitizeFTS) — so .length is an exact character
+			// count here (non-ASCII input never reaches a token).
 			const usable = trimmed
 				.split(TOKEN_SPLIT_RE)
 				.some((tok) => tok.length >= MIN_QUERY_LEN);
@@ -204,6 +206,17 @@
 		};
 
 		ctl.clear = function () {
+			// Abort the in-flight fetch and invalidate any pending response
+			// (bump lastSeq, drop the debounce) so a late result can't
+			// re-open the dropdown the user just dismissed, nor keep the
+			// store's single connection busy after dismissal. Same reasoning
+			// as reset(); the hero-search Escape path relies on this.
+			if (inflight) {
+				inflight.abort();
+				inflight = undefined;
+			}
+			lastSeq++;
+			clearTimeout(debounce);
 			ctl.hits = [];
 			render();
 		};

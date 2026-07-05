@@ -420,6 +420,19 @@ func TestAPISearchMinLength(t *testing.T) {
 	if n := hitCount("1"); n == 0 {
 		t.Errorf("q=%q hits = 0, want > 0 (OID prefix exempt from floor)", "1")
 	}
+	// Regression: an embedded dot must not 500. An unquoted '.' left in an
+	// FTS5 MATCH term (e.g. `ifIn.0*`) is a syntax error; sanitizeFTS
+	// treats '.' as a token boundary, so this searches as ifIn*. hitCount
+	// fails the test on any non-200 status, so it guards the 500.
+	if n := hitCount("ifIn.0"); n == 0 {
+		t.Errorf("q=%q hits = 0, want > 0 (dot is a token boundary, ifIn* matches)", "ifIn.0")
+	}
+	// A trailing-dot OID transient (typed mid-OID in the palette) is not a
+	// valid OID prefix and has no usable FTS token — it must resolve to an
+	// empty 200, not a 500 from a `1.3.6.*` syntax error.
+	if n := hitCount("1.3.6."); n != 0 {
+		t.Errorf("q=%q hits = %d, want 0 (trailing-dot OID → no usable token)", "1.3.6.", n)
+	}
 }
 
 // downloadTestServer seeds a closure A → B → unloaded C with real

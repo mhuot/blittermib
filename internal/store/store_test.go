@@ -425,6 +425,15 @@ func TestSanitizeFTS(t *testing.T) {
 		{"p-", ""},
 		{"p q", ""},
 		{"palo a", "palo*"},
+		// A '.' is a token boundary — it must never survive into a token,
+		// because an unquoted dot in an FTS5 MATCH term is a syntax error
+		// (e.g. `1.3*` → `fts5: syntax error near "."`). These are the
+		// inputs that reach the FTS path with an embedded dot: an OID with
+		// a trailing dot typed into the palette, or a dotted word.
+		{"1.3.6.", ""},
+		{"ifDescr.1", "ifDescr*"},
+		{"node.js", "node* js*"},
+		{"a.b", ""},
 	}
 	for _, c := range cases {
 		if got := sanitizeFTS(c.in); got != c.want {
