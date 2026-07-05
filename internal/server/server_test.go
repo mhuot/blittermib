@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -364,6 +365,73 @@ func TestWorkspaceRoute(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAPISearchMinLength verifies the typeahead API gates ultra-short
+// text queries (a one-rune query becomes the FTS prefix `p*`, which
+// bm25-scores a large slice of the corpus) while still serving longer
+// queries and OID-shaped queries of any length.
+func TestAPISearchMinLength(t *testing.T) {
+	ts := newTestServer(t)
+
+	hitCount := func(q string) int {
+		t.Helper()
+		resp, err := http.Get(ts.URL + "/api/v1/search?q=" + url.QueryEscape(q))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("q=%q status = %d, want 200", q, resp.StatusCode)
+		}
+		var payload struct {
+			Hits []struct {
+				Name string
+			}
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			t.Fatalf("q=%q decode: %v", q, err)
+		}
+		return len(payload.Hits)
+	}
+
+	// Single-character text query is gated: even though seeded symbols
+	// (ifTable, ifIndex, …) start with "i", the server declines it.
+	if n := hitCount("i"); n != 0 {
+		t.Errorf("q=%q hits = %d, want 0 (gated below the token floor)", "i", n)
+	}
+	// The floor applies per FTS token, not to the raw query length —
+	// punctuation splits tokens, so "p-" must not sneak through as `p*`.
+	if n := hitCount("p-"); n != 0 {
+		t.Errorf("q=%q hits = %d, want 0 (sub-floor token after tokenization)", "p-", n)
+	}
+	// Two characters clears the floor and runs FTS against the seeded IF-MIB.
+	if n := hitCount("if"); n == 0 {
+		t.Errorf("q=%q hits = 0, want > 0 (FTS should match if*)", "if")
+	}
+	// Mixed queries keep their usable tokens: the sub-floor "x" is
+	// dropped and "ifIn" still matches.
+	if n := hitCount("ifIn x"); n == 0 {
+		t.Errorf("q=%q hits = 0, want > 0 (sub-floor token dropped, not fatal)", "ifIn x")
+	}
+	// OID-shaped queries are exempt from the floor — a single "1" is a
+	// cheap indexed LIKE against the seeded 1.3.6.* OIDs, not an FTS scan.
+	if n := hitCount("1"); n == 0 {
+		t.Errorf("q=%q hits = 0, want > 0 (OID prefix exempt from floor)", "1")
+	}
+	// Regression: an embedded dot must not 500. An unquoted '.' left in an
+	// FTS5 MATCH term (e.g. `ifIn.0*`) is a syntax error; sanitizeFTS
+	// treats '.' as a token boundary, so this searches as ifIn*. hitCount
+	// fails the test on any non-200 status, so it guards the 500.
+	if n := hitCount("ifIn.0"); n == 0 {
+		t.Errorf("q=%q hits = 0, want > 0 (dot is a token boundary, ifIn* matches)", "ifIn.0")
+	}
+	// A trailing-dot OID transient (typed mid-OID in the palette) is not a
+	// valid OID prefix and has no usable FTS token — it must resolve to an
+	// empty 200, not a 500 from a `1.3.6.*` syntax error.
+	if n := hitCount("1.3.6."); n != 0 {
+		t.Errorf("q=%q hits = %d, want 0 (trailing-dot OID → no usable token)", "1.3.6.", n)
 	}
 }
 

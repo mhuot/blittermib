@@ -14,8 +14,20 @@
 	'use strict';
 
 	const SEARCH_URL = '/api/v1/search';
-	const DEBOUNCE_MS = 80;
+	const DEBOUNCE_MS = 150;
 	const MAX_RESULTS = 25;
+	// Mirror of the server's gate (rationale: internal/store/search.go,
+	// minFTSTokenLen) — skip queries the server would decline anyway.
+	// The floor is per token, like the server's. A '.' is a token
+	// boundary here too (the server's sanitizeFTS treats it as one), so a
+	// trailing-dot OID transient like "1.3.6." has no usable token and is
+	// gated rather than forwarded. OID-shaped queries are exempt via
+	// OID_QUERY_RE: they take the cheap indexed path, so "1" must fetch —
+	// but the shape must match the server's oidPrefixQuery, which rejects
+	// trailing dots and empty segments.
+	const MIN_QUERY_LEN = 2;
+	const OID_QUERY_RE = /^\.?[0-9]+(\.[0-9]+)*$/;
+	const TOKEN_SPLIT_RE = /[^A-Za-z0-9_]+/;
 
 	const TEMPLATE = `
 <div class="palette-overlay" data-state="hidden" role="dialog" aria-modal="true" aria-labelledby="palette-input">
@@ -64,6 +76,7 @@
 	function searchController(opts) {
 		let debounce;
 		let lastSeq = 0;
+		let inflight; // AbortController for the current fetch, if any
 
 		const ctl = {
 			hits: [],
@@ -129,22 +142,44 @@
 
 		async function search(q) {
 			const seq = ++lastSeq;
-			if (!q.trim()) {
+			// Abort any request the previous keystroke left in flight so the
+			// server isn't left scoring a query whose results we'll discard —
+			// under the store's single connection those stack up and stall
+			// the whole site.
+			if (inflight) inflight.abort();
+			const trimmed = q.trim();
+			// Per-token, like the server: "a b" has no usable token and
+			// would be declined, so don't send it. TOKEN_SPLIT_RE keeps
+			// only ASCII word characters (dot is a separator, matching the
+			// server's sanitizeFTS) — so .length is an exact character
+			// count here (non-ASCII input never reaches a token).
+			const usable = trimmed
+				.split(TOKEN_SPLIT_RE)
+				.some((tok) => tok.length >= MIN_QUERY_LEN);
+			if (!usable && !OID_QUERY_RE.test(trimmed)) {
+				inflight = undefined;
 				ctl.hits = [];
 				render();
 				return;
 			}
+			const controller = new AbortController();
+			inflight = controller;
 			try {
-				const res = await fetch(SEARCH_URL + '?q=' + encodeURIComponent(q));
+				const res = await fetch(SEARCH_URL + '?q=' + encodeURIComponent(q), {
+					signal: controller.signal,
+				});
 				if (!res.ok) throw new Error('search ' + res.status);
 				const data = await res.json();
 				if (seq !== lastSeq) return; // stale response, ignore
 				ctl.hits = (data.hits || []).slice(0, MAX_RESULTS);
 				render();
 			} catch (err) {
+				if (err && err.name === 'AbortError') return; // superseded, expected
 				console.warn(opts.warnLabel, err);
 				ctl.hits = [];
 				render();
+			} finally {
+				if (inflight === controller) inflight = undefined;
 			}
 		}
 
@@ -171,13 +206,33 @@
 		};
 
 		ctl.clear = function () {
+			// Abort the in-flight fetch and invalidate any pending response
+			// (bump lastSeq, drop the debounce) so a late result can't
+			// re-open the dropdown the user just dismissed, nor keep the
+			// store's single connection busy after dismissal. Same reasoning
+			// as reset(); the hero-search Escape path relies on this.
+			if (inflight) {
+				inflight.abort();
+				inflight = undefined;
+			}
+			lastSeq++;
+			clearTimeout(debounce);
 			ctl.hits = [];
 			render();
 		};
 
 		// reset empties the model without rendering empty-state chrome —
-		// used when (re)opening a surface with a blank query.
+		// used when (re)opening a surface with a blank query. Aborting the
+		// in-flight fetch and bumping lastSeq here means a request left
+		// pending when the surface closed can neither keep the server busy
+		// nor render its stale hits into the reopened, blank surface.
 		ctl.reset = function () {
+			if (inflight) {
+				inflight.abort();
+				inflight = undefined;
+			}
+			lastSeq++;
+			clearTimeout(debounce);
 			ctl.hits = [];
 			ctl.active = -1;
 			opts.list.innerHTML = '';
@@ -216,6 +271,9 @@
 	function hide() {
 		if (!overlay) return;
 		overlay.dataset.state = 'hidden';
+		// Cancel any pending debounce/fetch — a request nobody will see
+		// shouldn't keep occupying the server's single DB connection.
+		if (modalCtl) modalCtl.reset();
 		if (returnFocusTo && typeof returnFocusTo.focus === 'function') {
 			try { returnFocusTo.focus(); } catch (_) { /* node removed */ }
 		}

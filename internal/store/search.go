@@ -6,6 +6,30 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
+)
+
+// ErrQueryTooShort is returned by Search when the query contains no
+// usable FTS token (see minFTSTokenLen) — callers can distinguish
+// "declined as too broad" from a genuinely empty result set.
+var ErrQueryTooShort = fmt.Errorf(
+	"search query too short: needs a word of at least %d characters", minFTSTokenLen)
+
+const (
+	// minFTSTokenLen is the shortest token sanitizeFTS will emit.
+	// Every token becomes a prefix match, and a one-rune prefix like
+	// `p*` matches a huge share of the corpus; bm25 ranking then
+	// scores every match before LIMIT applies — seconds per query on
+	// a multi-million-symbol corpus. Sub-floor tokens are dropped
+	// (not rejected) so "palo a" still searches as `palo*`.
+	minFTSTokenLen = 2
+
+	// ftsSearchTimeout bounds a single FTS query. The store runs on
+	// one connection (MaxOpenConns=1), so an expensive query blocks
+	// every other request behind it; interrupting at 5s frees the
+	// connection instead of holding it until the caller (or an
+	// upstream proxy) gives up.
+	ftsSearchTimeout = 5 * time.Second
 )
 
 // oidPrefixPattern restricts SearchByOIDPrefix input to digits and dots.
@@ -29,14 +53,25 @@ type SearchHit struct {
 // The query is passed through to FTS5 after light sanitization. Use
 // SearchPrefix for prefix matches; for exact symbol or OID lookup
 // callers should prefer GetSymbol / GetSymbolByOID.
+//
+// Queries with no usable token return ErrQueryTooShort, and each call
+// is bounded by ftsSearchTimeout — a timeout satisfies
+// errors.Is(err, context.DeadlineExceeded) (it may arrive wrapped from
+// the initial query or bare from row iteration).
 func (s *Store) Search(ctx context.Context, query string, limit int) ([]SearchHit, error) {
 	if limit <= 0 {
 		limit = 25
 	}
 	q := sanitizeFTS(query)
 	if q == "" {
+		if strings.TrimSpace(query) != "" {
+			return nil, ErrQueryTooShort
+		}
 		return nil, nil
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, ftsSearchTimeout)
+	defer cancel()
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.module_name, s.name, s.oid, s.kind,
@@ -215,8 +250,20 @@ func (s *Store) SearchByOIDPrefix(ctx context.Context, prefix string, limit int)
 //
 // FTS5 reserves: " ' ( ) : * ^ + - and bare keyword tokens (NEAR, AND, …).
 // For the cmd-K palette use case we want plain prefix-style search,
-// so we drop everything but word characters and dots, then add a `*`
-// suffix so each token becomes a prefix match.
+// so we drop everything but word characters, then add a `*` suffix so
+// each token becomes a prefix match.
+//
+// A '.' is a token boundary too: it is not a token character to FTS5's
+// tokenizer, and left inside an unquoted term (e.g. `1.3*`) it is a
+// MATCH *syntax error*, so keeping it would compile OID-shaped and
+// dotted queries into a query that errors out. OID-shaped queries take
+// the indexed SearchByOIDPrefix path instead, so nothing here needs it.
+//
+// Tokens shorter than minFTSTokenLen are dropped: gating on the raw
+// query length wouldn't be enough, since punctuation splits tokens —
+// "p-" would still compile to the pathological one-rune prefix `p*`.
+// Only single-byte ASCII reaches a token (the switch below), so
+// word.Len() is an exact character count.
 func sanitizeFTS(q string) string {
 	q = strings.TrimSpace(q)
 	if q == "" {
@@ -225,25 +272,26 @@ func sanitizeFTS(q string) string {
 	var b strings.Builder
 	var word strings.Builder
 	flush := func() {
-		if word.Len() > 0 {
+		if word.Len() >= minFTSTokenLen {
 			if b.Len() > 0 {
 				b.WriteByte(' ')
 			}
 			b.WriteString(word.String())
 			b.WriteByte('*')
-			word.Reset()
 		}
+		word.Reset()
 	}
 	for _, r := range q {
 		switch {
-		case r == '_' || r == '.' ||
+		case r == '_' ||
 			(r >= '0' && r <= '9') ||
 			(r >= 'A' && r <= 'Z') ||
 			(r >= 'a' && r <= 'z'):
 			word.WriteRune(r)
 		default:
-			// Anything else (including hyphen, which FTS5 interprets
-			// as the NOT operator) is treated as a token boundary.
+			// Anything else — including '.' (an unquoted dot is an FTS5
+			// MATCH syntax error) and hyphen (the FTS5 NOT operator) —
+			// is treated as a token boundary.
 			flush()
 		}
 	}

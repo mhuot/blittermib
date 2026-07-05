@@ -1435,7 +1435,26 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	hits := s.searchWithExactMatch(ctx, q, 50)
+	hits, err := s.searchWithExactMatch(ctx, q, 50)
+	switch classifySearchErr(err) {
+	case searchErrTooShort:
+		// Too broad to search, not "no results" — show the same page as
+		// an empty query rather than claiming nothing matched.
+		render(w, r, http.StatusOK, web.SearchEmpty())
+		return
+	case searchErrTimeout:
+		render(w, r, http.StatusGatewayTimeout,
+			web.InternalError("search timed out — try a longer or more specific query"))
+		return
+	case searchErrCanceled:
+		// The client went away (typeahead abort, navigation) — there is
+		// nobody left to render for, and it isn't a server fault worth
+		// an error log.
+		return
+	case searchErrInternal:
+		s.internalError(w, r, err)
+		return
+	}
 	if len(hits) == 0 {
 		// Fall through to "did you mean": Levenshtein-against-name
 		// candidates. Errors here are non-fatal — the no-results
@@ -1488,7 +1507,25 @@ func (s *Server) handleAPISearch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"hits": []any{}})
 		return
 	}
-	hits := s.searchWithExactMatch(r.Context(), q, 25)
+	hits, err := s.searchWithExactMatch(r.Context(), q, 25)
+	switch classifySearchErr(err) {
+	case searchErrTooShort:
+		// The typeahead fires per keystroke; a declined-as-too-broad
+		// query is an empty result, not an error, from its point of view.
+		writeJSON(w, http.StatusOK, map[string]any{"hits": []any{}})
+		return
+	case searchErrTimeout:
+		s.apiError(w, r, http.StatusGatewayTimeout, "search timed out", nil)
+		return
+	case searchErrCanceled:
+		// Expected in steady state: the palette aborts the in-flight
+		// request on every superseded keystroke. Not an error, and the
+		// aborted client cannot read a response anyway.
+		return
+	case searchErrInternal:
+		s.apiError(w, r, http.StatusInternalServerError, "internal error", err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"hits": hits})
 }
 
@@ -1883,23 +1920,56 @@ func (s *Server) handleAPISymbol(w http.ResponseWriter, r *http.Request) {
 // strips dots, so an OID-shaped query against the inverted index
 // would either match nothing or wildly over-match. The store's
 // SearchByOIDPrefix uses LIKE on the indexed `oid` column instead.
-func (s *Server) searchWithExactMatch(ctx context.Context, q string, limit int) []store.SearchHit {
+//
+// A store.ErrQueryTooShort or timeout from the FTS path is returned
+// to the caller so it can render an honest state instead of a false
+// "no results" — unless the cheap qualified exact-match lookup still
+// answers (e.g. "IF-MIB::i"), in which case the error is cleared.
+//
+// The caller classifies the returned error with classifySearchErr.
+
+// searchErrKind classifies an error from searchWithExactMatch so the
+// HTML (handleSearch) and JSON (handleAPISearch) paths respond
+// consistently — the only difference between them is how each renders.
+type searchErrKind int
+
+const (
+	searchErrNone     searchErrKind = iota // no error — render results
+	searchErrTooShort                      // too broad to search — empty page/hits
+	searchErrTimeout                       // FTS bound exceeded — 504
+	searchErrCanceled                      // client went away — nothing to render
+	searchErrInternal                      // anything else — 500
+)
+
+func classifySearchErr(err error) searchErrKind {
+	switch {
+	case err == nil:
+		return searchErrNone
+	case errors.Is(err, store.ErrQueryTooShort):
+		return searchErrTooShort
+	case errors.Is(err, context.DeadlineExceeded):
+		return searchErrTimeout
+	case errors.Is(err, context.Canceled):
+		return searchErrCanceled
+	default:
+		return searchErrInternal
+	}
+}
+
+func (s *Server) searchWithExactMatch(ctx context.Context, q string, limit int) ([]store.SearchHit, error) {
 	if prefix, ok := oidPrefixQuery(q); ok {
-		hits, err := s.store.SearchByOIDPrefix(ctx, prefix, limit)
-		if err != nil {
-			slog.Warn("oid prefix search failed", "q", q, "err", err)
-			return nil
-		}
-		return hits
+		return s.store.SearchByOIDPrefix(ctx, prefix, limit)
 	}
 
 	hits, err := s.store.Search(ctx, q, limit)
-	if err != nil {
-		slog.Warn("search failed", "q", q, "err", err)
+	if err != nil &&
+		!errors.Is(err, store.ErrQueryTooShort) &&
+		!errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
 	}
 
 	if module, name, ok := splitQualified(q); ok {
-		if sym, err := s.store.GetSymbol(ctx, module, name); err == nil {
+		if sym, lookupErr := s.store.GetSymbol(ctx, module, name); lookupErr == nil {
 			exact := store.SearchHit{
 				SymbolID: sym.ID,
 				Module:   sym.ModuleName,
@@ -1914,9 +1984,10 @@ func (s *Server) searchWithExactMatch(ctx context.Context, q string, limit int) 
 				}
 			}
 			hits = append([]store.SearchHit{exact}, hits...)
+			err = nil
 		}
 	}
-	return hits
+	return hits, err
 }
 
 // --- error pages -----------------------------------------------------
