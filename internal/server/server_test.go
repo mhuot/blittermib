@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026 Ronny Trommer <ronny@no42.org>
+ * SPDX-License-Identifier: MIT
+ */
+
 package server
 
 import (
@@ -36,6 +41,12 @@ func newTestServer(t *testing.T) *httptest.Server {
 
 	if err := storetest.SeedIFMIB(context.Background(), st); err != nil {
 		t.Fatalf("seed store: %v", err)
+	}
+	// The OID-tree handlers read the materialised oid_node trie, which
+	// the import pipeline rebuilds after each ingest. Tests seed via
+	// ReplaceModule directly, so build the trie explicitly here.
+	if err := st.RebuildOIDTree(context.Background()); err != nil {
+		t.Fatalf("rebuild oid tree: %v", err)
 	}
 
 	s := New(st, "", "test", "/var/lib/blittermib/mibs")
@@ -318,49 +329,6 @@ func TestWorkspaceRoute(t *testing.T) {
 	}
 }
 
-func TestAPITreeFragment(t *testing.T) {
-	ts := newTestServer(t)
-	resp, err := http.Get(ts.URL + "/api/v1/tree/fragment?parent=1.3.6.1.2.1.2.2.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200", resp.StatusCode)
-	}
-	html := body(t, resp)
-	// Phase 4: the fragment endpoint emits `<li>` rows directly
-	// (no surrounding `<ul>`); the chevron's HTMX swap appends
-	// them into the pre-rendered .tree-children-container in the
-	// parent row.
-	//
-	// Phase 5: workspace tree rows split the camelCase name into
-	// `<span class="pre">` + `<span class="tail">` for the dim/
-	// bright treatment, so `>ifIndex<` no longer appears as a
-	// literal substring. We assert on `data-name="…"` instead —
-	// it carries the unsplit name and is the API a future test
-	// (or scraper) would actually want to key off.
-	for _, want := range []string{
-		`class="tree-row `,
-		`data-name="ifIndex"`,
-		`data-name="ifInOctets"`,
-	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("tree fragment missing %q", want)
-		}
-	}
-}
-
-func TestAPITreeFragmentMissingParent(t *testing.T) {
-	ts := newTestServer(t)
-	resp, err := http.Get(ts.URL + "/api/v1/tree/fragment")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("status = %d, want 404 (no parent param)", resp.StatusCode)
-	}
-}
-
 // TestAPISearchMinLength verifies the typeahead API gates ultra-short
 // text queries (a one-rune query becomes the FTS prefix `p*`, which
 // bm25-scores a large slice of the corpus) while still serving longer
@@ -412,6 +380,19 @@ func TestAPISearchMinLength(t *testing.T) {
 	// cheap indexed LIKE against the seeded 1.3.6.* OIDs, not an FTS scan.
 	if n := hitCount("1"); n == 0 {
 		t.Errorf("q=%q hits = 0, want > 0 (OID prefix exempt from floor)", "1")
+	}
+	// Regression: an embedded dot must not 500. An unquoted '.' left in an
+	// FTS5 MATCH term (e.g. `ifIn.0*`) is a syntax error; sanitizeFTS
+	// treats '.' as a token boundary, so this searches as ifIn*. hitCount
+	// fails the test on any non-200 status, so it guards the 500.
+	if n := hitCount("ifIn.0"); n == 0 {
+		t.Errorf("q=%q hits = 0, want > 0 (dot is a token boundary, ifIn* matches)", "ifIn.0")
+	}
+	// A trailing-dot OID transient (typed mid-OID in the palette) is not a
+	// valid OID prefix and has no usable FTS token — it must resolve to an
+	// empty 200, not a 500 from a `1.3.6.*` syntax error.
+	if n := hitCount("1.3.6."); n != 0 {
+		t.Errorf("q=%q hits = %d, want 0 (trailing-dot OID → no usable token)", "1.3.6.", n)
 	}
 }
 
@@ -972,15 +953,16 @@ func TestWorkspaceScopeFilter(t *testing.T) {
 		}
 	}
 
-	// /m/IF-MIB/1.3.6.1.2.1.2.2.1 (ifEntry) narrows to the entry +
-	// its columns; ifTable (the parent) is excluded.
+	// /m/IF-MIB/1.3.6.1.2.1.2.2.1 (ifEntry) narrows to the entry's
+	// columns; both ifTable (the parent) and ifEntry (the scope root
+	// itself) are excluded — the root is the breadcrumb's current crumb,
+	// so listing it again duplicates it.
 	resp, err = http.Get(ts.URL + "/m/IF-MIB/1.3.6.1.2.1.2.2.1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	scoped := body(t, resp)
 	for _, want := range []string{
-		`data-name="ifEntry"`,
 		`data-name="ifIndex"`,
 		`data-name="ifInOctets"`,
 	} {
@@ -991,6 +973,10 @@ func TestWorkspaceScopeFilter(t *testing.T) {
 	// The list pane scope-link is rendered when scope is active.
 	if !strings.Contains(scoped, "View all in module") {
 		t.Errorf("scoped list missing the View-all-in-module link")
+	}
+	// The scope root (ifEntry) is no longer a list-row.
+	if strings.Contains(scoped, `data-name="ifEntry"`) {
+		t.Errorf("scoped list still includes the scope-root ifEntry row")
 	}
 	// Server-narrowing means ifTable should NOT appear as a list-row
 	// (it can still appear as the scope-link href, etc., so check the
@@ -1113,7 +1099,7 @@ func TestSearchResultsLinkToWorkspace(t *testing.T) {
 	html := body(t, resp)
 	// Hit rows must point at the workspace selection, not the
 	// canonical detail page (Phase 3 retarget).
-	want := `href="/m/IF-MIB/1.3.6.1.2.1.2.2.1.10"`
+	want := `href="/m/IF-MIB/1.3.6.1.2.1.2.2.1.10?sel=ifInOctets"`
 	if !strings.Contains(html, want) {
 		t.Errorf("search hit link missing %q (search results should target workspace, not /s/...)", want)
 	}
@@ -1486,12 +1472,12 @@ func TestAPITree(t *testing.T) {
 	var got struct {
 		Parent   string
 		Children []struct {
-			OID         string
-			Name        string
-			Module      string
-			Kind        string
-			HasChildren bool
-			Position    string
+			OID        string
+			Name       string
+			Module     string
+			Kind       string
+			ChildCount int64
+			Position   string
 		}
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
@@ -1502,12 +1488,12 @@ func TestAPITree(t *testing.T) {
 	}
 	// ifEntry is at 1.3.6.1.2.1.2.2.1 in our fixture and has children.
 	var entry *struct {
-		OID         string
-		Name        string
-		Module      string
-		Kind        string
-		HasChildren bool
-		Position    string
+		OID        string
+		Name       string
+		Module     string
+		Kind       string
+		ChildCount int64
+		Position   string
 	}
 	for i := range got.Children {
 		if got.Children[i].Name == "ifEntry" {
@@ -1518,11 +1504,780 @@ func TestAPITree(t *testing.T) {
 	if entry == nil {
 		t.Fatal("ifEntry not in children")
 	}
-	if !entry.HasChildren {
-		t.Error("ifEntry should report HasChildren=true")
+	if entry.ChildCount == 0 {
+		t.Error("ifEntry should report children (childCount > 0)")
 	}
 	if entry.Position != "1" {
 		t.Errorf("ifEntry position = %q, want 1", entry.Position)
+	}
+}
+
+// treeAPIResp mirrors the /api/v1/tree JSON shape for decoding in tests.
+type treeAPIResp struct {
+	Parent     string
+	NextAfter  *string
+	PrevBefore *string
+	Children   []struct {
+		OID         string
+		DirectOID   string
+		Name        string
+		NamePath    string
+		Module      string
+		Kind        string
+		HasSymbol   bool
+		HasChildren bool
+		ChildCount  int64
+		Position    string
+	}
+}
+
+func getTree(t *testing.T, ts *httptest.Server, query string) treeAPIResp {
+	t.Helper()
+	resp, err := http.Get(ts.URL + "/api/v1/tree?" + query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d for %q", resp.StatusCode, query)
+	}
+	var got treeAPIResp
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	return got
+}
+
+// treeServerWith builds a server seeded with the given symbols and a
+// rebuilt OID trie — for tree tests needing controlled fan-out.
+func treeServerWith(t *testing.T, syms []model.Symbol) *httptest.Server {
+	t.Helper()
+	st, err := store.OpenInMemory(context.Background())
+	if err != nil {
+		t.Fatalf("OpenInMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.ReplaceModule(context.Background(),
+		&model.Module{Name: "M", ParseStatus: model.ParseStatusClean}, syms, nil, nil); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := st.RebuildOIDTree(context.Background()); err != nil {
+		t.Fatalf("rebuild oid tree: %v", err)
+	}
+	ts := httptest.NewServer(New(st, "", "test", t.TempDir()).Handler())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// TestAPITreeNumericOrder pins numeric (not lexical) sibling ordering.
+func TestAPITreeNumericOrder(t *testing.T) {
+	ts := treeServerWith(t, []model.Symbol{
+		{ModuleName: "M", Name: "a", OID: "1.3.6.1.4.1.99.1", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "b", OID: "1.3.6.1.4.1.99.2", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "c", OID: "1.3.6.1.4.1.99.10", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "d", OID: "1.3.6.1.4.1.99.100", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+	})
+	got := getTree(t, ts, "parent=1.3.6.1.4.1.99")
+	var positions []string
+	for _, c := range got.Children {
+		positions = append(positions, c.Position)
+	}
+	want := []string{"1", "2", "10", "100"}
+	if len(positions) != len(want) {
+		t.Fatalf("positions = %v, want %v", positions, want)
+	}
+	for i := range want {
+		if positions[i] != want[i] {
+			t.Fatalf("positions = %v, want %v (numeric)", positions, want)
+		}
+	}
+}
+
+// TestAPITreeKeyset walks two pages and asserts no overlap and a null
+// terminal cursor.
+func TestAPITreeKeyset(t *testing.T) {
+	ts := treeServerWith(t, []model.Symbol{
+		{ModuleName: "M", Name: "a", OID: "1.3.6.1.4.1.99.1", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "b", OID: "1.3.6.1.4.1.99.2", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "c", OID: "1.3.6.1.4.1.99.3", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+	})
+	page1 := getTree(t, ts, "parent=1.3.6.1.4.1.99&limit=2")
+	if len(page1.Children) != 2 {
+		t.Fatalf("page1 len = %d, want 2", len(page1.Children))
+	}
+	if page1.NextAfter == nil {
+		t.Fatal("page1 should carry a next cursor")
+	}
+	page2 := getTree(t, ts, "parent=1.3.6.1.4.1.99&limit=2&after="+*page1.NextAfter)
+	if len(page2.Children) != 1 {
+		t.Fatalf("page2 len = %d, want 1", len(page2.Children))
+	}
+	if page2.NextAfter != nil {
+		t.Errorf("page2 should be terminal (nil cursor), got %v", *page2.NextAfter)
+	}
+	// No overlap.
+	seen := map[string]bool{}
+	for _, c := range page1.Children {
+		seen[c.OID] = true
+	}
+	for _, c := range page2.Children {
+		if seen[c.OID] {
+			t.Errorf("OID %s appeared on both pages", c.OID)
+		}
+	}
+}
+
+// TestAPITreeBackward checks the `before` cursor: it returns the page
+// preceding the cursor (ascending) with a prevBefore cursor when more
+// earlier siblings remain.
+func TestAPITreeBackward(t *testing.T) {
+	ts := treeServerWith(t, []model.Symbol{
+		{ModuleName: "M", Name: "a", OID: "1.3.6.1.4.1.99.1", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "b", OID: "1.3.6.1.4.1.99.2", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "c", OID: "1.3.6.1.4.1.99.3", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+	})
+	// before the last (.3), limit 1 → [.2] with a prevBefore (since .1 remains).
+	page := getTree(t, ts, "parent=1.3.6.1.4.1.99&before=1.3.6.1.4.1.99.3&limit=1")
+	if len(page.Children) != 1 || page.Children[0].Position != "2" {
+		t.Fatalf("before=.3 limit=1 = %v, want [.2]", page.Children)
+	}
+	if page.NextAfter != nil {
+		t.Errorf("backward page should not carry a forward cursor")
+	}
+	// Page before .2 → [.1], no prevBefore (level start reached).
+	page2 := getTree(t, ts, "parent=1.3.6.1.4.1.99&before=1.3.6.1.4.1.99.2&limit=1")
+	if len(page2.Children) != 1 || page2.Children[0].Position != "1" {
+		t.Fatalf("before=.2 = %v, want [.1]", page2.Children)
+	}
+}
+
+// TestAPITreeSyntheticNode checks that an intermediate prefix with no
+// symbol is surfaced as a navigable, non-symbol node. The bridge has two
+// children so it is a BRANCH — path compression leaves branch nodes as
+// their own rows (a single-child bridge would instead fold into its
+// descendant; see TestAPITreeFoldsSingleChildRun).
+func TestAPITreeSyntheticNode(t *testing.T) {
+	ts := treeServerWith(t, []model.Symbol{
+		{ModuleName: "M", Name: "leaf1", OID: "1.3.6.1.4.1.99.5.1", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "leaf2", OID: "1.3.6.1.4.1.99.5.2", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+	})
+	// 1.3.6.1.4.1.99.5 has no symbol but bridges to the .5.1/.5.2 leaves.
+	got := getTree(t, ts, "parent=1.3.6.1.4.1.99")
+	if len(got.Children) != 1 {
+		t.Fatalf("want one child (the .5 bridge), got %d", len(got.Children))
+	}
+	c := got.Children[0]
+	if c.HasSymbol {
+		t.Error("bridge node should report hasSymbol=false")
+	}
+	if c.ChildCount == 0 {
+		t.Error("bridge node should report children (childCount > 0)")
+	}
+	if c.OID != "1.3.6.1.4.1.99.5" {
+		t.Errorf("bridge OID = %q", c.OID)
+	}
+}
+
+// TestAPITreeFoldsSingleChildRun pins path compression end to end: a run
+// of single-child nodes collapses into one row whose Position is the
+// dotted seg-path, NamePath the dotted resolved names, anchor fields the
+// deepest node, and ChildCount the badge figure. A leaf tail is absorbed.
+func TestAPITreeFoldsSingleChildRun(t *testing.T) {
+	ts := treeServerWith(t, []model.Symbol{
+		// .99 → .99.1 → .99.1.4 (leaf): a single-child run bottoming in a leaf.
+		{ModuleName: "M", Name: "spine", OID: "1.3.6.1.4.1.99.1", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "tip", OID: "1.3.6.1.4.1.99.1.4", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+	})
+	got := getTree(t, ts, "parent=1.3.6.1.4.1")
+	if len(got.Children) != 1 {
+		t.Fatalf("enterprises children = %d, want 1 folded row", len(got.Children))
+	}
+	c := got.Children[0]
+	if c.Position != "99.1.4" {
+		t.Errorf("position (seg-path) = %q, want %q", c.Position, "99.1.4")
+	}
+	if c.NamePath != "99.spine.tip" {
+		t.Errorf("namePath = %q, want %q", c.NamePath, "99.spine.tip")
+	}
+	if c.OID != "1.3.6.1.4.1.99.1.4" || c.Name != "tip" {
+		t.Errorf("anchor = %q/%q, want the .99.1.4 tip", c.OID, c.Name)
+	}
+	if c.ChildCount != 0 {
+		t.Errorf("absorbed-leaf row childCount=%d, want 0 (leaf)", c.ChildCount)
+	}
+	// The cursor for this row is the DIRECT child (.99), not the anchor.
+	if c.DirectOID != "1.3.6.1.4.1.99" {
+		t.Errorf("directOID (cursor) = %q, want 1.3.6.1.4.1.99", c.DirectOID)
+	}
+}
+
+// TestAPITreeMockupRegion reproduces the screenshot region under the
+// inclusive fold rule: a node with exactly one child merges with that
+// child even when the child is a branch. The root spine folds all the way
+// to internet (dod's one child), and mgmt folds into mib-2 → ".2.1
+// mgmt.mib-2" with mib-2's child-count badge.
+func TestAPITreeMockupRegion(t *testing.T) {
+	// Symbols hang leaves so the intermediate prefixes get the right child
+	// counts: internet gets two children (directory, mgmt) → a branch;
+	// mib-2 gets two (system, interfaces) → a branch; mgmt keeps one.
+	ts := treeServerWith(t, []model.Symbol{
+		{ModuleName: "M", Name: "aDir", OID: "1.3.6.1.1.1", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "sysDescr", OID: "1.3.6.1.2.1.1.1", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "ifNumber", OID: "1.3.6.1.2.1.2.1", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+	})
+
+	// Apex: each of iso/org/dod has exactly one child, so the spine folds
+	// down to (and includes) internet, the first branch (2 children).
+	apex := getTree(t, ts, "parent=")
+	if len(apex.Children) != 1 {
+		t.Fatalf("apex children = %d, want 1 folded spine row", len(apex.Children))
+	}
+	if c := apex.Children[0]; c.Position != "1.3.6.1" || c.NamePath != "iso.org.dod.internet" ||
+		c.OID != "1.3.6.1" || c.HasSymbol || c.ChildCount != 2 {
+		t.Fatalf("apex row = %+v, want .1.3.6.1 iso.org.dod.internet [2] (synthetic)", c)
+	}
+
+	// internet → directory and mgmt. mgmt has one child (mib-2), so it
+	// FOLDS into it: ".2.1 mgmt.mib-2" anchored at mib-2 with its [2] badge.
+	inet := getTree(t, ts, "parent=1.3.6.1")
+	mgmtIdx := -1
+	for i := range inet.Children {
+		if inet.Children[i].Position == "2.1" {
+			mgmtIdx = i
+		}
+	}
+	if mgmtIdx < 0 {
+		t.Fatalf("no folded mgmt.mib-2 row among internet children: %+v", inet.Children)
+	}
+	if c := inet.Children[mgmtIdx]; c.NamePath != "mgmt.mib-2" || c.OID != "1.3.6.1.2.1" ||
+		c.ChildCount != 2 || c.DirectOID != "1.3.6.1.2" {
+		t.Errorf("mgmt row = %+v, want .2.1 mgmt.mib-2 [2] (anchor mib-2, direct 1.3.6.1.2)", c)
+	}
+}
+
+// TestAPITreeFamily pins the kind-family filter on the API: with
+// branches=1&family=table the tree prunes to table-bearing branches;
+// family is ignored without branches=1; an unknown family ⇒ no filter.
+func TestAPITreeFamily(t *testing.T) {
+	ts := treeServerWith(t, []model.Symbol{
+		// Under mib-2: system has a scalar; interfaces has a table.
+		{ModuleName: "M", Name: "sysDescr", OID: "1.3.6.1.2.1.1.1", Kind: model.KindScalar, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "ifTable", OID: "1.3.6.1.2.1.2.2", Kind: model.KindTable, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "ifEntry", OID: "1.3.6.1.2.1.2.2.1", Kind: model.KindTableEntry, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "ifIndex", OID: "1.3.6.1.2.1.2.2.1.1", Kind: model.KindColumn, Status: model.StatusCurrent},
+	})
+	const mib2 = "parent=1.3.6.1.2.1&branches=1"
+
+	// No family ⇒ both system and interfaces show.
+	all := getTree(t, ts, mib2)
+	if len(all.Children) != 2 {
+		t.Fatalf("branches, no family = %d rows, want 2", len(all.Children))
+	}
+
+	// family=table ⇒ only the interfaces branch (folded to its entry).
+	tbl := getTree(t, ts, mib2+"&family=table")
+	if len(tbl.Children) != 1 || tbl.Children[0].DirectOID != "1.3.6.1.2.1.2" {
+		t.Fatalf("family=table = %+v, want 1 row under interfaces", tbl.Children)
+	}
+
+	// family=notif ⇒ nothing here matches.
+	if n := getTree(t, ts, mib2+"&family=notif"); len(n.Children) != 0 {
+		t.Errorf("family=notif = %d rows, want 0", len(n.Children))
+	}
+
+	// family WITHOUT branches=1 is ignored (standalone tree shows all).
+	if s := getTree(t, ts, "parent=1.3.6.1.2.1&family=table"); len(s.Children) != 2 {
+		t.Errorf("family without branches = %d rows, want 2 (ignored)", len(s.Children))
+	}
+}
+
+// TestAPITreeFoldCursorUsesDirectChild pins that a paginated cursor on a
+// folded boundary row carries the direct child OID, so the next page
+// continues by sibling segment rather than by the anchor's deep segment.
+func TestAPITreeFoldCursorUsesDirectChild(t *testing.T) {
+	ts := treeServerWith(t, []model.Symbol{
+		// Two single-child spines under .99: .1→.1.7 and .2→.2.7.
+		{ModuleName: "M", Name: "a", OID: "1.3.6.1.4.1.99.1.7", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "b", OID: "1.3.6.1.4.1.99.2.7", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+	})
+	page1 := getTree(t, ts, "parent=1.3.6.1.4.1.99&limit=1")
+	if page1.NextAfter == nil {
+		t.Fatal("page1 should carry a next cursor")
+	}
+	if *page1.NextAfter != "1.3.6.1.4.1.99.1" {
+		t.Errorf("cursor = %q, want the direct child 1.3.6.1.4.1.99.1 (not the .1.7 anchor)", *page1.NextAfter)
+	}
+	page2 := getTree(t, ts, "parent=1.3.6.1.4.1.99&limit=1&after="+*page1.NextAfter)
+	if len(page2.Children) != 1 || page2.Children[0].Position != "2.7" {
+		t.Fatalf("page2 = %v, want the .2 spine folded to 2.7", page2.Children)
+	}
+}
+
+// TestAPITreeBranches pins the workspace "container map": with branches=1
+// leaf objects are hidden and a container whose children are all leaves is
+// reported non-expandable (hasChildren=false) though its childCount stands;
+// without the param every node shows.
+func TestAPITreeBranches(t *testing.T) {
+	ts := treeServerWith(t, []model.Symbol{
+		// Under .99: a scalar leaf .1 and a table .4 → entry .4.1 → 2 columns.
+		{ModuleName: "M", Name: "scalar", OID: "1.3.6.1.4.1.99.1", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "col1", OID: "1.3.6.1.4.1.99.4.1.1", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "col2", OID: "1.3.6.1.4.1.99.4.1.2", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+	})
+
+	// Default: both the scalar leaf and the folded table.entry show.
+	def := getTree(t, ts, "parent=1.3.6.1.4.1.99")
+	if len(def.Children) != 2 {
+		t.Fatalf("default children = %d, want 2 (scalar + table)", len(def.Children))
+	}
+
+	// branches=1: the scalar leaf is hidden; only the folded table.entry
+	// remains, and it is non-expandable (its children are leaf columns).
+	br := getTree(t, ts, "parent=1.3.6.1.4.1.99&branches=1")
+	if len(br.Children) != 1 {
+		t.Fatalf("branches=1 children = %d, want 1 (scalar hidden)", len(br.Children))
+	}
+	c := br.Children[0]
+	if c.Position != "4.1" || c.HasChildren || c.ChildCount != 2 {
+		t.Errorf("folded entry = %+v, want position 4.1, hasChildren=false, childCount=2", c)
+	}
+
+	// Drilling the entry with branches=1 yields nothing (columns are leaves).
+	cols := getTree(t, ts, "parent=1.3.6.1.4.1.99.4.1&branches=1")
+	if len(cols.Children) != 0 {
+		t.Errorf("branches=1 under the entry = %d rows, want 0", len(cols.Children))
+	}
+}
+
+// TestAPITreeInvalidCursor degrades a malformed cursor to the first page.
+func TestAPITreeInvalidCursor(t *testing.T) {
+	ts := newTestServer(t)
+	first := getTree(t, ts, "parent=1.3.6.1.2.1.2.2.1")
+	bad := getTree(t, ts, "parent=1.3.6.1.2.1.2.2.1&after=not-an-oid")
+	if len(bad.Children) != len(first.Children) || len(first.Children) == 0 {
+		t.Fatalf("invalid cursor should yield the first page: got %d, first %d",
+			len(bad.Children), len(first.Children))
+	}
+	if bad.Children[0].OID != first.Children[0].OID {
+		t.Errorf("invalid cursor first child = %q, want %q",
+			bad.Children[0].OID, first.Children[0].OID)
+	}
+}
+
+// TestWorkspaceTreeIsland pins that the workspace left pane renders the
+// global tree island (not a server-rendered module-scoped tree) and
+// carries the selection as data-tree-focus for the spine expansion.
+func TestWorkspaceTreeIsland(t *testing.T) {
+	ts := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/m/IF-MIB/1.3.6.1.2.1.2.2.1.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := body(t, resp)
+	for _, want := range []string{
+		`data-tree-mode="workspace"`,
+		`data-tree-focus="1.3.6.1.2.1.2.2.1.10"`,
+		`data-tree-module="IF-MIB"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("workspace page missing island attribute %q", want)
+		}
+	}
+	// The retired server-rendered fragment tree must be gone.
+	if strings.Contains(html, "tree-children-container") {
+		t.Error("workspace still renders the old fragment-tree markup")
+	}
+}
+
+// spineAPIResp mirrors the /api/v1/tree/spine JSON shape for decoding.
+type spineAPIResp struct {
+	Focus  string
+	Levels []struct {
+		Parent    string
+		Anchored  bool
+		NextAfter *string
+		Children  []struct {
+			OID         string
+			DirectOID   string
+			Name        string
+			NamePath    string
+			Module      string
+			Kind        string
+			HasSymbol   bool
+			HasChildren bool
+			ChildCount  int64
+			Position    string
+		}
+	}
+}
+
+func getSpine(t *testing.T, ts *httptest.Server, query string) spineAPIResp {
+	t.Helper()
+	resp, err := http.Get(ts.URL + "/api/v1/tree/spine?" + query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d for %q", resp.StatusCode, query)
+	}
+	var got spineAPIResp
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	return got
+}
+
+// TestAPITreeSpine pins the one-shot spine endpoint: it returns every level
+// from the apex down to the focus (apex-first), each descending into the
+// previous level's fold anchor, with item shapes identical to /api/v1/tree.
+func TestAPITreeSpine(t *testing.T) {
+	ts := treeServerWith(t, []model.Symbol{
+		{ModuleName: "M", Name: "focus", OID: "1.3.6.1.4.1.99.5.2", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "sib", OID: "1.3.6.1.4.1.99.5.9", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "seven", OID: "1.3.6.1.4.1.99.7.1", Kind: model.KindObjectIdentity, Status: model.StatusCurrent},
+	})
+
+	got := getSpine(t, ts, "focus=1.3.6.1.4.1.99.5.2")
+	if got.Focus != "1.3.6.1.4.1.99.5.2" {
+		t.Errorf("focus echoed = %q", got.Focus)
+	}
+	wantParents := []string{"", "1.3.6.1.4.1.99", "1.3.6.1.4.1.99.5"}
+	if len(got.Levels) != 3 {
+		t.Fatalf("spine levels = %d, want 3 (parents %v)", len(got.Levels), wantParents)
+	}
+	for i, want := range wantParents {
+		if got.Levels[i].Parent != want {
+			t.Errorf("level %d parent = %q, want %q", i, got.Levels[i].Parent, want)
+		}
+	}
+	// Apex level folds to the enterprises.99 anchor and carries the compressed
+	// name-path — the same projection /api/v1/tree emits.
+	apex := got.Levels[0]
+	if len(apex.Children) != 1 || apex.Children[0].OID != "1.3.6.1.4.1.99" {
+		t.Fatalf("apex level children = %+v, want one row anchored at …99", apex.Children)
+	}
+	if apex.Children[0].Position == "" || apex.Children[0].NamePath == "" {
+		t.Errorf("apex row missing folded position/namePath: %+v", apex.Children[0])
+	}
+	// The deepest level holds the focus row (by its direct-child cursor key).
+	deepest := got.Levels[2]
+	var haveFocus bool
+	for _, c := range deepest.Children {
+		if c.DirectOID == "1.3.6.1.4.1.99.5.2" {
+			haveFocus = true
+		}
+	}
+	if !haveFocus {
+		t.Errorf("deepest level missing the focus row: %+v", deepest.Children)
+	}
+
+	// Item shape parity: the level under 99 matches /api/v1/tree for that parent.
+	lazy := getTree(t, ts, "parent=1.3.6.1.4.1.99")
+	if len(lazy.Children) != len(got.Levels[1].Children) {
+		t.Errorf("level-under-99 child count spine=%d lazy=%d, want equal",
+			len(got.Levels[1].Children), len(lazy.Children))
+	}
+}
+
+// TestAPITreeSpineBranches pins that branches=1 hides leaf objects in the
+// spine exactly as it does per level: a leaf-column focus stops at the
+// deepest container.
+func TestAPITreeSpineBranches(t *testing.T) {
+	ts := treeServerWith(t, []model.Symbol{
+		{ModuleName: "M", Name: "s1", OID: "1.3.6.1.4.1.99.1.1", Kind: model.KindScalar, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "tbl", OID: "1.3.6.1.4.1.99.1.4", Kind: model.KindTable, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "entry", OID: "1.3.6.1.4.1.99.1.4.1", Kind: model.KindTableEntry, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "col1", OID: "1.3.6.1.4.1.99.1.4.1.1", Kind: model.KindColumn, Status: model.StatusCurrent},
+		{ModuleName: "M", Name: "col2", OID: "1.3.6.1.4.1.99.1.4.1.2", Kind: model.KindColumn, Status: model.StatusCurrent},
+	})
+
+	got := getSpine(t, ts, "focus=1.3.6.1.4.1.99.1.4.1.1&branches=1")
+	// No level is parented at the entry or the hidden column — the walk stops
+	// at the entry container.
+	for _, lv := range got.Levels {
+		if lv.Parent == "1.3.6.1.4.1.99.1.4.1" || lv.Parent == "1.3.6.1.4.1.99.1.4.1.1" {
+			t.Errorf("spine descended past the container into a hidden level: parent=%q", lv.Parent)
+		}
+	}
+	// The entry appears as a non-expandable row somewhere in the spine.
+	var sawEntry bool
+	for _, lv := range got.Levels {
+		for _, c := range lv.Children {
+			if c.OID == "1.3.6.1.4.1.99.1.4.1" {
+				sawEntry = true
+				if c.HasChildren {
+					t.Error("table-entry should be a non-expandable tree leaf in branches mode")
+				}
+			}
+		}
+	}
+	if !sawEntry {
+		t.Error("spine missing the deepest container (the table-entry)")
+	}
+}
+
+// TestAPITreeSpineBadFocus pins that a missing or non-OID focus is a 400 and
+// that the error response carries NO cache validators — treeCacheHit runs
+// only after validation, so an invalid request can't be cached or 304'd.
+func TestAPITreeSpineBadFocus(t *testing.T) {
+	ts := newTestServer(t)
+	for _, q := range []string{"", "focus=", "focus=not-an-oid"} {
+		resp, err := http.Get(ts.URL + "/api/v1/tree/spine?" + q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("focus %q → status %d, want 400", q, resp.StatusCode)
+		}
+		if et := resp.Header.Get("ETag"); et != "" {
+			t.Errorf("focus %q → 400 carries ETag %q, want none (validate before caching)", q, et)
+		}
+		_ = resp.Body.Close()
+	}
+
+	// Even with an If-None-Match, a bad focus stays 400 — it is never
+	// short-circuited to 304 by the cache path.
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/tree/spine?focus=not-an-oid", nil)
+	req.Header.Set("If-None-Match", `"oidtree-g1-test-abc"`)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad focus with If-None-Match → status %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestAPITreeErrorCarriesNoValidators pins that a tree error response never
+// carries success cache validators: a conforming cache could otherwise store
+// the error body and a later 304 would revalidate it as fresh. Closing the
+// store makes both the validator read and the page read fail, so the 500
+// must arrive with no ETag/Cache-Control.
+func TestAPITreeErrorCarriesNoValidators(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenInMemory(ctx)
+	if err != nil {
+		t.Fatalf("OpenInMemory: %v", err)
+	}
+	if err := st.ReplaceModule(ctx, &model.Module{Name: "M", ParseStatus: model.ParseStatusClean},
+		[]model.Symbol{{ModuleName: "M", Name: "a", OID: "1.3.6.1.4.1.99.1", Kind: model.KindObjectIdentity, Status: model.StatusCurrent}},
+		nil, nil); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := st.RebuildOIDTree(ctx); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	ts := httptest.NewServer(New(st, "", "test", t.TempDir()).Handler())
+	t.Cleanup(ts.Close)
+	_ = st.Close() // every store read now fails → the handlers 500
+
+	for _, url := range []string{
+		"/api/v1/tree?parent=1.3.6.1.4.1.99",
+		"/api/v1/tree/spine?focus=1.3.6.1.4.1.99.1",
+	} {
+		resp, err := http.Get(ts.URL + url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Errorf("%s status = %d, want 500", url, resp.StatusCode)
+		}
+		if et := resp.Header.Get("ETag"); et != "" {
+			t.Errorf("%s 500 carries ETag %q, want none", url, et)
+		}
+		if cc := resp.Header.Get("Cache-Control"); cc != "" {
+			t.Errorf("%s 500 carries Cache-Control %q, want none", url, cc)
+		}
+	}
+}
+
+// TestAPITreeNoValidatorsWithoutGeneration pins the zero-generation guard:
+// a store whose trie has never been (re)built in a generation-aware world
+// (generation 0 — e.g. a brand-new DB before its first build) must serve
+// tree responses WITHOUT cache validators. The zero is shared across every
+// such database, so minting "oidtree-g0-…" would let a cache revalidate one
+// DB's response against another's after a swap (a false 304).
+func TestAPITreeNoValidatorsWithoutGeneration(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenInMemory(ctx)
+	if err != nil {
+		t.Fatalf("OpenInMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	// Symbols present but the trie never rebuilt → generation stays 0.
+	if err := st.ReplaceModule(ctx, &model.Module{Name: "M", ParseStatus: model.ParseStatusClean},
+		[]model.Symbol{{ModuleName: "M", Name: "a", OID: "1.3.6.1.4.1.99.1", Kind: model.KindObjectIdentity, Status: model.StatusCurrent}},
+		nil, nil); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ts := httptest.NewServer(New(st, "", "test", t.TempDir()).Handler())
+	t.Cleanup(ts.Close)
+
+	for _, url := range []string{
+		"/api/v1/tree?parent=1.3.6.1.4.1.99",
+		"/api/v1/tree/spine?focus=1.3.6.1.4.1.99.1",
+	} {
+		resp, err := http.Get(ts.URL + url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("%s status = %d, want 200", url, resp.StatusCode)
+		}
+		if et := resp.Header.Get("ETag"); et != "" {
+			t.Errorf("%s zero-generation response carries ETag %q, want none", url, et)
+		}
+		// Explicit no-store, not a bare 200: without directives the
+		// response would be heuristically cacheable (RFC 9111 §4.2.2).
+		if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("%s zero-generation Cache-Control = %q, want %q", url, cc, "no-store")
+		}
+	}
+
+	// A conditional request with the shared zero tag must NOT 304.
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/tree?parent=1.3.6.1.4.1.99", nil)
+	req.Header.Set("If-None-Match", `"oidtree-g0-test"`)
+	cond, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = cond.Body.Close()
+	if cond.StatusCode == http.StatusNotModified {
+		t.Error("zero-generation conditional request returned 304 — the shared g0 tag must never validate")
+	}
+}
+
+// TestAPITreeETagChangesAfterRebuild pins the cache-validity token tracks
+// trie CONTENT: after a runtime rebuild that adds OIDs (an import/hot-reload
+// path, schema version unchanged), a conditional request with the old ETag
+// must NOT 304 — it must get a fresh 200 with a new ETag.
+func TestAPITreeETagChangesAfterRebuild(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenInMemory(ctx)
+	if err != nil {
+		t.Fatalf("OpenInMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.ReplaceModule(ctx, &model.Module{Name: "M", ParseStatus: model.ParseStatusClean},
+		[]model.Symbol{{ModuleName: "M", Name: "a", OID: "1.3.6.1.4.1.99.1", Kind: model.KindObjectIdentity, Status: model.StatusCurrent}},
+		nil, nil); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := st.RebuildOIDTree(ctx); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	ts := httptest.NewServer(New(st, "", "test", t.TempDir()).Handler())
+	t.Cleanup(ts.Close)
+
+	const url = "/api/v1/tree?parent=1.3.6.1.4.1.99"
+	first, err := http.Get(ts.URL + url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	etag := first.Header.Get("ETag")
+	_ = first.Body.Close()
+	if etag == "" {
+		t.Fatal("first response missing ETag")
+	}
+
+	// Same request before any rebuild → 304.
+	cond := func() *http.Response {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+url, nil)
+		req.Header.Set("If-None-Match", etag)
+		resp, derr := http.DefaultClient.Do(req)
+		if derr != nil {
+			t.Fatal(derr)
+		}
+		return resp
+	}
+	pre := cond()
+	_ = pre.Body.Close()
+	if pre.StatusCode != http.StatusNotModified {
+		t.Fatalf("pre-rebuild conditional = %d, want 304", pre.StatusCode)
+	}
+
+	// Content rebuild: add an OID (schema version stays constant).
+	if err := st.ReplaceModule(ctx, &model.Module{Name: "N", ParseStatus: model.ParseStatusClean},
+		[]model.Symbol{{ModuleName: "N", Name: "b", OID: "1.3.6.1.4.1.99.2", Kind: model.KindObjectIdentity, Status: model.StatusCurrent}},
+		nil, nil); err != nil {
+		t.Fatalf("second seed: %v", err)
+	}
+	if err := st.RebuildOIDTree(ctx); err != nil {
+		t.Fatalf("second rebuild: %v", err)
+	}
+
+	// The same conditional request must now MISS (fresh 200, new ETag) —
+	// serving the stale 304 would hide the newly imported OID.
+	post := cond()
+	newEtag := post.Header.Get("ETag")
+	_ = post.Body.Close()
+	if post.StatusCode == http.StatusNotModified {
+		t.Error("post-rebuild conditional returned 304 — stale tree served after a content rebuild")
+	}
+	if newEtag == etag {
+		t.Errorf("ETag unchanged (%s) after a content rebuild — cache validator is content-blind", etag)
+	}
+}
+
+// TestAPITreeETag pins the cache-validation contract: tree responses carry a
+// strong ETag, a matching If-None-Match short-circuits to 304, and distinct
+// requests carry distinct ETags.
+func TestAPITreeETag(t *testing.T) {
+	ts := newTestServer(t)
+
+	resp, err := http.Get(ts.URL + "/api/v1/tree?parent=1.3.6.1.2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	etag := resp.Header.Get("ETag")
+	_ = resp.Body.Close()
+	if etag == "" {
+		t.Fatal("tree response missing ETag")
+	}
+	if resp.Header.Get("Cache-Control") == "" {
+		t.Error("tree response missing Cache-Control")
+	}
+
+	// Same request with the ETag → 304, no body.
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/tree?parent=1.3.6.1.2.1", nil)
+	req.Header.Set("If-None-Match", etag)
+	cond, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = cond.Body.Close()
+	if cond.StatusCode != http.StatusNotModified {
+		t.Errorf("conditional request status = %d, want 304", cond.StatusCode)
+	}
+
+	// One validator serves every tree URL by design (caches key entries by
+	// URL; If-None-Match only replays to the same URL), so no per-query
+	// distinctness is asserted here — the validator varies with the trie
+	// generation and build version only.
+
+	// The spine endpoint validates the same way.
+	sp, err := http.Get(ts.URL + "/api/v1/tree/spine?focus=1.3.6.1.2.1.2.2.1.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spineETag := sp.Header.Get("ETag")
+	_ = sp.Body.Close()
+	if spineETag == "" {
+		t.Error("spine response missing ETag")
+	}
+	spReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/tree/spine?focus=1.3.6.1.2.1.2.2.1.10", nil)
+	spReq.Header.Set("If-None-Match", spineETag)
+	spCond, err := http.DefaultClient.Do(spReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = spCond.Body.Close()
+	if spCond.StatusCode != http.StatusNotModified {
+		t.Errorf("spine conditional status = %d, want 304", spCond.StatusCode)
 	}
 }
 
@@ -1615,7 +2370,7 @@ func TestSymbolDisambiguationRedirectsSingleMatch(t *testing.T) {
 	// workspace selection so `/s/{name}` is consistent with /o/{oid}
 	// and search-hit retargets. Symbols without an OID still fall
 	// back to /s/... via web.WorkspaceSymbolURL.
-	if loc := resp.Header.Get("Location"); loc != "/m/IF-MIB/1.3.6.1.2.1.2.2.1.10" {
+	if loc := resp.Header.Get("Location"); loc != "/m/IF-MIB/1.3.6.1.2.1.2.2.1.10?sel=ifInOctets" {
 		t.Errorf("location = %q", loc)
 	}
 }
