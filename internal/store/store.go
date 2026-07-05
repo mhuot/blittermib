@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026 Ronny Trommer <ronny@no42.org>
+ * SPDX-License-Identifier: MIT
+ */
+
 package store
 
 import (
@@ -8,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -69,6 +75,14 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate reference position: %w", err)
 	}
+	if err := migrateAddOIDNodeFamilyFlags(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate oid_node family flags: %w", err)
+	}
+	if err := migrateStampOIDTreeGeneration(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate oid tree generation: %w", err)
+	}
 	s := &Store{db: db}
 	// One-time: classify an already-ingested corpus whose relationship
 	// tables predate the feature (the boot sync skips unchanged MIBs, so
@@ -77,6 +91,12 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("backfill relationships: %w", err)
 	}
+	// The OID trie (oid_node) is NOT built here. It is a server-only
+	// projection owned by the import engine, which rebuilds it from the
+	// background corpus loader (engine.SyncCorpus) once the listener is
+	// bound — so a one-time upgrade rebuild never blocks startup, and a
+	// store consumer that doesn't serve the tree (e.g. blittermib-mcp)
+	// never pays to build it.
 	return s, nil
 }
 
@@ -216,6 +236,89 @@ func migrateAddReferencePosition(ctx context.Context, db *sql.DB) error {
 	); err != nil {
 		return fmt.Errorf("alter table add position: %w", err)
 	}
+	return nil
+}
+
+// migrateAddOIDNodeFamilyFlags adds the has_scalar / has_table / has_notif
+// subtree-family columns to oid_node on databases whose trie predates the
+// kind-filtered tree. oid_node is a derived projection that RebuildOIDTree
+// refills via DELETE+INSERT (not DROP+CREATE), so the columns must exist
+// before that INSERT can reference them. Non-destructive in-place ALTERs;
+// the columns default 0 and the version-gated RebuildOIDTree (bumped to
+// fill them) sets the real values on the same upgrade.
+//
+// Each column is checked and added INDEPENDENTLY (not gated on a single
+// sentinel), because the three ALTERs are separate autocommit statements:
+// a crash after adding has_scalar but before has_notif must self-heal on
+// the next boot, not leave the schema permanently half-migrated (which
+// would make RebuildOIDTree's INSERT fail forever on the missing column).
+func migrateAddOIDNodeFamilyFlags(ctx context.Context, db *sql.DB) error {
+	for _, col := range []string{"has_scalar", "has_table", "has_notif"} {
+		has, err := tableHasColumn(ctx, db, "oid_node", col)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		slog.Info("adding family-flag column to oid_node", "column", col)
+		// #nosec G202 -- col is a compile-time constant from the loop, not user input.
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE oid_node ADD COLUMN `+col+` INTEGER NOT NULL DEFAULT 0`,
+		); err != nil {
+			return fmt.Errorf("alter table add %s: %w", col, err)
+		}
+	}
+	return nil
+}
+
+// migrateStampOIDTreeGeneration stamps schema_meta('oid_tree_generation')
+// on databases whose trie predates the generation-tagged tree ETags: the
+// trie CONTENT under the current oid_tree_version is intact — only the
+// cache-validity token is missing — so a one-row INSERT, not a full trie
+// rebuild, is the correct upgrade. Without it every pre-upgrade DB would
+// serve the SHARED zero generation, and two such DBs would carry
+// byte-identical ETags for different content (a DB swap could false-304;
+// see OIDTreeGeneration). Wall-clock anchored like RebuildOIDTree's bump —
+// at NANOSECOND resolution, so even two DBs migrated within the same
+// second receive distinct tokens. Runs synchronously in Open, before any
+// listener binds, so upgraded DBs never serve a zero-generation window.
+//
+// A DB with no trie yet (no oid_tree_version marker) is left alone: its
+// first RebuildOIDTree stamps the token, and treeETag serves uncacheable
+// responses until then.
+//
+// Both keys are READ-probed before the INSERT so a fully-stamped DB's
+// Open never executes a write statement: even a conflicting no-op
+// INSERT acquires SQLite's write lock, which would block every Open
+// behind a concurrent writer (the server's ~14s RebuildOIDTree) and fail
+// outright on read-only media — fatal for blittermib-mcp, which opens
+// the live server DB per client session and never writes. ON CONFLICT
+// DO NOTHING stays on the INSERT only to keep the two-process upgrade
+// race benign (both probe the key as absent; one INSERT wins, the other
+// no-ops).
+func migrateStampOIDTreeGeneration(ctx context.Context, db *sql.DB) error {
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM schema_meta WHERE key = 'oid_tree_version'`).Scan(&n); err != nil {
+		return fmt.Errorf("probe oid_tree_version: %w", err)
+	}
+	if n == 0 {
+		return nil // no trie yet — the first RebuildOIDTree stamps it
+	}
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM schema_meta WHERE key = 'oid_tree_generation'`).Scan(&n); err != nil {
+		return fmt.Errorf("probe oid_tree_generation: %w", err)
+	}
+	if n > 0 {
+		return nil // already stamped — keep Open write-free
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO schema_meta(key, value) VALUES ('oid_tree_generation', ?)
+		ON CONFLICT(key) DO NOTHING`, time.Now().UnixNano()); err != nil {
+		return fmt.Errorf("stamp oid tree generation: %w", err)
+	}
+	slog.Info("stamped oid_tree_generation for a pre-upgrade trie")
 	return nil
 }
 
