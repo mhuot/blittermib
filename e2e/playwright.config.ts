@@ -24,7 +24,14 @@ export default defineConfig({
     cwd: path.resolve(__dirname, '..'),
     url: `${baseURL}/readyz`,
     env: { PORT },
-    reuseExistingServer: !process.env.CI,
+    // Never reuse: the harness embeds its static assets, so a server left
+    // running from an earlier run serves the palette.js/styles.css it was
+    // built with. That silently voids the freshness invariant `make e2e`
+    // sets up via prepare-assets + generate — and because helpers.ts reads
+    // DEBOUNCE_MS/MIN_QUERY_LEN from that same stale server, the timing
+    // envelope stays self-consistent while testing the wrong build. Paying
+    // one `go run` per run is cheaper than chasing that.
+    reuseExistingServer: false,
     // `go run` compiles on first launch; give a cold CI build room.
     timeout: 120_000,
     stdout: 'pipe',
