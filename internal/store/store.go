@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -24,6 +25,19 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+// dsnPragmas is appended to the database path to form the driver DSN.
+//
+// These MUST be DSN parameters rather than one-off `PRAGMA` statements:
+// a `PRAGMA` applies only to the connection that ran it, and losing
+// `foreign_keys` on a replacement connection silently disables the
+// ON DELETE CASCADE that ReplaceModule's `DELETE FROM module` relies on
+// — leaving orphaned `symbol` rows that make the next re-import of that
+// module fail on the UNIQUE (module_name, name) constraint.
+const dsnPragmas = "?_pragma=foreign_keys(1)" +
+	"&_pragma=journal_mode(WAL)" +
+	"&_pragma=synchronous(NORMAL)" +
+	"&_pragma=busy_timeout(5000)"
+
 // Store wraps a SQLite database.
 type Store struct {
 	db *sql.DB
@@ -34,28 +48,41 @@ type Store struct {
 // path may be ":memory:" for an ephemeral test database; the file form
 // uses WAL mode for better read concurrency.
 func Open(ctx context.Context, path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	// The driver splits the DSN at the first '?', so a path containing
+	// one would silently truncate the filename AND drop every pragma
+	// below — opening an unrelated database with FK cascades disabled,
+	// which is precisely the corruption dsnPragmas exists to prevent.
+	// Refuse it loudly instead.
+	if strings.Contains(path, "?") {
+		return nil, fmt.Errorf("database path %q contains '?', which cannot be expressed in a SQLite DSN", path)
+	}
+	db, err := sql.Open("sqlite", path+dsnPragmas)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
-	// SQLite PRAGMAs are PER-CONNECTION. Pinning the pool to a single
-	// connection lets us set them once and have every query observe
-	// the same enforcement (FK cascades, WAL, busy timeout). At our
-	// self-hosted single-server scale the read-concurrency cost of
-	// max-1 is not measurable; SQLite serializes writes regardless.
+	// SQLite PRAGMAs are PER-CONNECTION, and database/sql replaces a
+	// pooled connection whenever the driver marks it bad — which a
+	// cancelled request context routinely does. Pinning the pool to one
+	// connection is therefore not enough on its own; the PRAGMAs ride
+	// in the DSN (above) so a replacement connection is born with the
+	// same enforcement. At our self-hosted single-server scale the
+	// read-concurrency cost of max-1 is not measurable; SQLite
+	// serializes writes regardless.
 	db.SetMaxOpenConns(1)
 
-	for _, p := range []string{
-		"PRAGMA foreign_keys = ON",
-		"PRAGMA journal_mode = WAL",
-		"PRAGMA synchronous  = NORMAL",
-		"PRAGMA busy_timeout = 5000",
-	} {
-		if _, err := db.ExecContext(ctx, p); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("apply pragma %q: %w", p, err)
-		}
+	// A DSN pragma parameter the driver doesn't recognise is discarded
+	// silently — a typo in dsnPragmas would leave cascades off with no
+	// error anywhere. Read the one that matters back and refuse to run
+	// without it, rather than corrupt the database row by row.
+	var fkOn int
+	if err := db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&fkOn); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("read foreign_keys pragma: %w", err)
+	}
+	if fkOn != 1 {
+		_ = db.Close()
+		return nil, errors.New("foreign_keys pragma did not apply — refusing to open with FK cascades disabled")
 	}
 
 	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
@@ -82,6 +109,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := migrateStampOIDTreeGeneration(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate oid tree generation: %w", err)
+	}
+	if err := sweepOrphanedModuleRows(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sweep orphaned module rows: %w", err)
 	}
 	s := &Store{db: db}
 	// One-time: classify an already-ingested corpus whose relationship
@@ -211,6 +242,77 @@ func migrateAddIndexImplied(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE symbol ADD COLUMN index_implied INTEGER NOT NULL DEFAULT 0`,
 	); err != nil {
 		return fmt.Errorf("alter table add index_implied: %w", err)
+	}
+	return nil
+}
+
+// sweepOrphanedModuleRows repairs a database that ran with
+// `foreign_keys` disabled on some connection (see dsnPragmas): rows in
+// the ON DELETE CASCADE children of `module` outlive the module they
+// belong to, because the cascade that should have taken them never
+// fired.
+//
+// Left in place, an orphaned `symbol` row makes the next re-import of
+// that module fail on UNIQUE (module_name, name) — the delete-then-
+// insert in ReplaceModule deletes a module row that no longer has the
+// children attached to it. The FTS shadow is kept in sync by the
+// symbol_ad trigger, so the sweep also clears the ghost symbols that
+// would otherwise keep surfacing in search.
+//
+// A healthy database has no orphans, and the sweep must not write on
+// that path — steady-state Open is read-only (see
+// TestOpenStampedDBIsWriteFree), so each table is counted first and the
+// DELETE only runs when there is damage to repair.
+// The SQL is spelled out per table rather than assembled from a table
+// name: dynamic SQL here buys nothing (the set is fixed and known at
+// compile time) and costs a gosec G202 suppression that would then have
+// to be trusted by every later reader.
+func sweepOrphanedModuleRows(ctx context.Context, db *sql.DB) error {
+	sweeps := []struct{ table, count, del string }{
+		{
+			"symbol",
+			`SELECT count(*) FROM symbol WHERE module_name NOT IN (SELECT name FROM module)`,
+			`DELETE FROM symbol WHERE module_name NOT IN (SELECT name FROM module)`,
+		},
+		{
+			"notification_relationship",
+			`SELECT count(*) FROM notification_relationship WHERE module_name NOT IN (SELECT name FROM module)`,
+			`DELETE FROM notification_relationship WHERE module_name NOT IN (SELECT name FROM module)`,
+		},
+		{
+			"notification_pair",
+			`SELECT count(*) FROM notification_pair WHERE module_name NOT IN (SELECT name FROM module)`,
+			`DELETE FROM notification_pair WHERE module_name NOT IN (SELECT name FROM module)`,
+		},
+	}
+	swept := false
+	for _, s := range sweeps {
+		var n int64
+		if err := db.QueryRowContext(ctx, s.count).Scan(&n); err != nil {
+			return fmt.Errorf("count orphans in %s: %w", s.table, err)
+		}
+		if n == 0 {
+			continue
+		}
+		slog.Warn("removing rows orphaned by a missed FK cascade",
+			"table", s.table, "rows", n)
+		if _, err := db.ExecContext(ctx, s.del); err != nil {
+			return fmt.Errorf("sweep %s: %w", s.table, err)
+		}
+		swept = true
+	}
+	if !swept {
+		return nil
+	}
+	// The oid_node trie is a projection of `symbol` with no FK of its
+	// own, and OIDTreeStale only compares a version marker — it cannot
+	// see that rows just vanished underneath it. Drop the marker so the
+	// background loader treats the trie as stale and rebuilds it;
+	// otherwise the swept symbols keep showing up in the OID browser
+	// until an unrelated import happens to trigger a rebuild.
+	if _, err := db.ExecContext(ctx,
+		`DELETE FROM schema_meta WHERE key = 'oid_tree_version'`); err != nil {
+		return fmt.Errorf("invalidate oid tree after sweep: %w", err)
 	}
 	return nil
 }

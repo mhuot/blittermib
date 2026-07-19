@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/no42-org/blittermib/internal/model"
 )
@@ -1026,5 +1028,147 @@ func TestSymbolsAtOID(t *testing.T) {
 	})
 	if got, _ := s.SymbolsAtOID(ctx, "ZBX", oid); len(got) != 2 {
 		t.Errorf("ZBX at OID after OTHER added = %d, want 2 (module-scoped)", len(got))
+	}
+}
+
+// TestForeignKeysSurviveConnectionLoss pins the DSN-vs-PRAGMA fix.
+//
+// database/sql discards a pooled connection whenever the driver marks
+// it bad, which a cancelled request context routinely does. When the
+// FK enforcement rode on a one-off `PRAGMA foreign_keys = ON`, the
+// replacement connection came back with cascades DISABLED, so
+// ReplaceModule's `DELETE FROM module` stopped taking the module's
+// symbols with it — and the next re-import of that module died on
+// UNIQUE (module_name, name). Carrying the pragma in the DSN makes
+// every connection, original or replacement, enforce the cascade.
+func TestForeignKeysSurviveConnectionLoss(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "fk.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	mod := sampleModule()
+	if err := s.ReplaceModule(ctx, mod, sampleSymbols(), nil, nil); err != nil {
+		t.Fatalf("ReplaceModule #1: %v", err)
+	}
+
+	// A TEMP table lives in the connection's own temp schema, so its
+	// survival is a direct probe of connection identity: if it is still
+	// there afterwards, the pool handed back the SAME connection and the
+	// test never exercised the regression.
+	if _, err := s.db.ExecContext(ctx, `CREATE TEMP TABLE conn_sentinel(x)`); err != nil {
+		t.Fatalf("create sentinel: %v", err)
+	}
+
+	// Kill the pooled connection the way a cancelled HTTP request does:
+	// start a query too long to finish, then cancel it out from under
+	// the driver. Retry until the sentinel is gone so a deadline that
+	// expires before the query is dispatched cannot make this test pass
+	// vacuously.
+	replaced := false
+	for i := 0; i < 50 && !replaced; i++ {
+		cctx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+		//nolint:rowserrcheck // the query is cancelled on purpose; the rows are never consumed.
+		_, _ = s.db.QueryContext(cctx, `WITH RECURSIVE c(x) AS (
+			SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 50000000)
+			SELECT count(*) FROM c`)
+		<-cctx.Done()
+		cancel()
+		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM temp.conn_sentinel LIMIT 1`).Scan(new(int))
+		replaced = err != nil && !errors.Is(err, sql.ErrNoRows)
+	}
+	if !replaced {
+		t.Fatal("pooled connection was never replaced — test would pass vacuously")
+	}
+
+	var fk int
+	if err := s.db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&fk); err != nil {
+		t.Fatalf("read foreign_keys: %v", err)
+	}
+	if fk != 1 {
+		t.Errorf("foreign_keys = %d after connection loss, want 1", fk)
+	}
+
+	// The re-import that used to fail: the cascade must have cleared
+	// the previous symbols before these are inserted.
+	if err := s.ReplaceModule(ctx, mod, sampleSymbols(), nil, nil); err != nil {
+		t.Fatalf("ReplaceModule #2 after connection loss: %v", err)
+	}
+}
+
+// TestSweepOrphanedModuleRows covers the repair half: a database that
+// already ran with cascades disabled carries symbol rows whose module
+// is gone. Open must clear them, so the module re-imports cleanly.
+func TestSweepOrphanedModuleRows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "orphan.db")
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open #1: %v", err)
+	}
+	if err := s.ReplaceModule(ctx, sampleModule(), sampleSymbols(), nil, nil); err != nil {
+		t.Fatalf("ReplaceModule: %v", err)
+	}
+	// Simulate the damage: drop the module row with cascades off, the
+	// way a connection that lost the pragma would have.
+	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatalf("disable foreign_keys: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM module WHERE name = 'IF-MIB'`); err != nil {
+		t.Fatalf("delete module: %v", err)
+	}
+	var orphans int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM symbol WHERE module_name = 'IF-MIB'`).Scan(&orphans); err != nil {
+		t.Fatal(err)
+	}
+	if orphans == 0 {
+		t.Fatal("setup did not produce orphaned symbol rows")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Reopen — the sweep runs and the orphans are gone.
+	s2, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open #2: %v", err)
+	}
+	defer func() { _ = s2.Close() }()
+	if err := s2.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM symbol WHERE module_name = 'IF-MIB'`).Scan(&orphans); err != nil {
+		t.Fatal(err)
+	}
+	if orphans != 0 {
+		t.Errorf("orphaned symbol rows after sweep = %d, want 0", orphans)
+	}
+	// The OID trie is a projection of the rows just deleted, so the
+	// sweep must mark it stale — otherwise the swept symbols keep
+	// showing up in the browser until an unrelated import rebuilds it.
+	stale, err := s2.OIDTreeStale(ctx)
+	if err != nil {
+		t.Fatalf("OIDTreeStale: %v", err)
+	}
+	if !stale {
+		t.Error("OID trie not marked stale after a sweep removed symbol rows")
+	}
+	if err := s2.ReplaceModule(ctx, sampleModule(), sampleSymbols(), nil, nil); err != nil {
+		t.Errorf("re-import after sweep: %v", err)
+	}
+}
+
+// TestOpenRejectsPathWithQuestionMark pins the DSN-splitting hazard:
+// the driver cuts the DSN at the first '?', so such a path would open a
+// DIFFERENT database with every pragma dropped — cascades off, silently.
+func TestOpenRejectsPathWithQuestionMark(t *testing.T) {
+	s, err := Open(context.Background(), filepath.Join(t.TempDir(), "q?mark.db"))
+	if err == nil {
+		_ = s.Close()
+		t.Fatal("Open accepted a path containing '?'; want an error")
+	}
+	if !strings.Contains(err.Error(), "?") {
+		t.Errorf("error should name the offending character, got: %v", err)
 	}
 }
