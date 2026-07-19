@@ -51,6 +51,16 @@ func run() error {
 		return fmt.Errorf("seed store: %w", err)
 	}
 
+	// The OID-tree handlers read the materialised oid_node trie, which the
+	// import pipeline rebuilds after each ingest. Seeding goes through
+	// ReplaceModule directly, so build the trie explicitly — exactly as
+	// newTestServer does in internal/server/server_test.go. Without this
+	// /api/v1/tree serves {"children":[]} and every tree-backed surface
+	// renders empty, silently, since no spec asserts tree content yet.
+	if err := st.RebuildOIDTree(ctx); err != nil {
+		return fmt.Errorf("rebuild oid tree: %w", err)
+	}
+
 	srv := server.New(st, addr, "e2e", "/nonexistent/mibs")
 	// Production opens this from the boot goroutine once the first corpus
 	// load finishes; here the seed is synchronous, so open it immediately
