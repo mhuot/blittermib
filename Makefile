@@ -1,4 +1,4 @@
-.PHONY: all build test verify run tidy fmt vet lint govulncheck gosec clean help check-tools hooks prepare-assets generate fetch-standard-mibs fetch-fonts fetch-alpine fetch-htmx refresh-pen index ingest ingest-report correlate-report verify-mibs verify-mibs-lexical verify-mibs-naming verify-mibs-parse dist docker-build docker-smoke
+.PHONY: all build test verify e2e run tidy fmt vet lint govulncheck gosec clean help check-tools hooks prepare-assets generate fetch-standard-mibs fetch-fonts fetch-alpine fetch-htmx refresh-pen index ingest ingest-report correlate-report verify-mibs verify-mibs-lexical verify-mibs-naming verify-mibs-parse dist docker-build docker-smoke
 
 # Pinned templ version — keep in sync with go.mod's github.com/a-h/templ entry.
 TEMPL_VERSION := v0.3.1001
@@ -196,6 +196,17 @@ test: prepare-assets
 	$(GO) test -race -count=1 $(PKG)
 
 verify: fmt-check vet test
+
+# End-to-end browser tests (Playwright). Depends on prepare-assets (fresh
+# styles.css, as build/test do) + generate (fresh *_templ.go, as dist
+# does) so the harness embeds current assets, then installs Node deps +
+# the Chromium binary on first run; the harness server is launched
+# automatically by the Playwright config. Requires Go + Node.
+# Plain `install` (no --with-deps) so it works without root; if a system
+# library is missing, Playwright prints the apt line to run. CI uses
+# --with-deps (see .github/workflows/e2e.yml).
+e2e: prepare-assets generate
+	cd e2e && npm ci && npx playwright install chromium && npx playwright test
 
 run: build
 	./$(BIN) -mibs ./mibs -data ./data

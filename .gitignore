@@ -49,5 +49,11 @@ go.work.sum
 coverage.out
 coverage.html
 
+# Playwright e2e (Node deps + run artifacts; harness binary)
+/e2e/node_modules/
+/e2e/playwright-report/
+/e2e/test-results/
+/e2e-harness
+
 # Golden-test inspection output (written on mismatch by golden_test.go)
 **/testdata/golden/*.got.html
