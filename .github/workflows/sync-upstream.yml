@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # push the merge to main
+  contents: write
   actions: write    # dispatch deploy.yml
 
 concurrency:
