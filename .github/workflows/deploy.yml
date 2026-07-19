@@ -35,8 +35,12 @@ jobs:
           docker compose up -d --build
 
       - name: Smoke test (/readyz)
+        # 120 x 5s = 10 min: a release that ships a schema migration can
+        # hold the readiness gate closed for minutes on our ~2.1M-symbol
+        # corpus (v0.17.0's one-time oid_node trie build took ~6 min).
+        # A normal cache-validated boot is ready in ~25s.
         run: |
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 120); do
             if docker exec blittermib wget -qO- http://127.0.0.1:8080/readyz >/dev/null 2>&1; then
               echo "blittermib is ready"
               exit 0

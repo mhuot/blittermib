@@ -11,6 +11,10 @@ services:
   blittermib:
     # Stable name nginx-director's upstream block proxies to.
     container_name: blittermib
+    # Come back on crash/reboot. Without this, a process exit (panic,
+    # OOM, stray signal) leaves the site down until someone notices —
+    # learned when a diagnostic SIGQUIT took the site out for 8 minutes.
+    restart: unless-stopped
     # Reached as http://blittermib:8080 on the proxy network; drop the
     # example's host port publish so nothing binds the host's :8080.
     ports: !reset []
