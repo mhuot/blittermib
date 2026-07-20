@@ -5,12 +5,17 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/no42-org/blittermib/internal/model"
 )
+
+// createTableRe captures the table name of a CREATE TABLE statement in
+// schema.sql; used by TestModuleChildTablesMatchSchema.
+var createTableRe = regexp.MustCompile(`^CREATE TABLE (?:IF NOT EXISTS )?(\w+)`)
 
 // TestMigrateAddOIDNodeFamilyFlagsPartial pins the self-heal for a
 // partially-applied family-flag migration: the three columns are added by
@@ -1170,5 +1175,121 @@ func TestOpenRejectsPathWithQuestionMark(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "?") {
 		t.Errorf("error should name the offending character, got: %v", err)
+	}
+}
+
+// TestReplaceModuleIndependentOfCascade pins that ReplaceModule clears
+// its own child rows rather than relying on ON DELETE CASCADE. The
+// cascade depends on a per-connection PRAGMA that lives OUTSIDE the
+// transaction; when it was silently lost, the partial delete orphaned
+// every module's symbols and broke re-import on UNIQUE (module_name,
+// name). Deleting by name is correct whatever the PRAGMA says.
+func TestReplaceModuleIndependentOfCascade(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	if err := s.ReplaceModule(ctx, sampleModule(), sampleSymbols(), nil, nil); err != nil {
+		t.Fatalf("ReplaceModule #1: %v", err)
+	}
+
+	// Take the safety net away.
+	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatalf("disable foreign_keys: %v", err)
+	}
+	var fk int
+	if err := s.db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&fk); err != nil {
+		t.Fatal(err)
+	}
+	if fk != 0 {
+		t.Fatalf("setup failed: foreign_keys = %d, want 0", fk)
+	}
+
+	// The re-import must still succeed, and must not double the rows.
+	if err := s.ReplaceModule(ctx, sampleModule(), sampleSymbols(), nil, nil); err != nil {
+		t.Fatalf("ReplaceModule #2 with cascades disabled: %v", err)
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM symbol WHERE module_name = 'IF-MIB'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if want := len(sampleSymbols()); n != want {
+		t.Errorf("symbol rows = %d, want %d — stale rows survived the replace", n, want)
+	}
+}
+
+// TestDeleteModuleIndependentOfCascade is the same guarantee for the
+// vanished-source path, which pruneGhosts drives at boot.
+func TestDeleteModuleIndependentOfCascade(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	if err := s.ReplaceModule(ctx, sampleModule(), sampleSymbols(), nil, nil); err != nil {
+		t.Fatalf("ReplaceModule: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatalf("disable foreign_keys: %v", err)
+	}
+	if err := s.DeleteModule(ctx, "IF-MIB"); err != nil {
+		t.Fatalf("DeleteModule: %v", err)
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM symbol WHERE module_name = 'IF-MIB'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("orphaned symbol rows after DeleteModule = %d, want 0", n)
+	}
+}
+
+// TestModuleChildTablesMatchSchema pins the parity between schema.sql's
+// ON DELETE CASCADE declarations and moduleChildTables — the shared
+// list that ReplaceModule, DeleteModule, and sweepOrphanedModuleRows
+// all consume. A new cascade child added to the schema without a list
+// entry would orphan its rows on any FK-off connection; this test turns
+// that silent divergence into a red build.
+func TestModuleChildTablesMatchSchema(t *testing.T) {
+	// Collect the tables whose CREATE TABLE block declares the cascade
+	// FK to module. SQL comments ("-- ...") are skipped so prose about
+	// the cascade doesn't count as a declaration.
+	fromSchema := map[string]bool{}
+	table := ""
+	for _, line := range strings.Split(schemaSQL, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+		if m := createTableRe.FindStringSubmatch(trimmed); m != nil {
+			table = m[1]
+		}
+		if strings.Contains(trimmed, "REFERENCES module(name) ON DELETE CASCADE") && table != "" {
+			fromSchema[table] = true
+		}
+	}
+
+	fromList := map[string]bool{}
+	for _, c := range moduleChildTables {
+		fromList[c.table] = true
+		// Each statement must actually target its declared table.
+		for _, q := range []string{c.deleteByModule, c.countOrphans, c.deleteOrphans} {
+			if !strings.Contains(q, " "+c.table+" ") {
+				t.Errorf("moduleChildTables[%s]: statement does not target its table: %s", c.table, q)
+			}
+		}
+	}
+
+	for name := range fromSchema {
+		if !fromList[name] {
+			t.Errorf("schema.sql declares %s as an ON DELETE CASCADE child of module, but moduleChildTables does not cover it", name)
+		}
+	}
+	for name := range fromList {
+		if !fromSchema[name] {
+			t.Errorf("moduleChildTables lists %s, but schema.sql declares no cascade FK to module on it", name)
+		}
+	}
+	if len(fromSchema) == 0 {
+		t.Fatal("parsed no cascade children from schema.sql — the regex is broken, not the schema")
 	}
 }

@@ -246,6 +246,44 @@ func migrateAddIndexImplied(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+// moduleChildTables is the single source of truth for the ON DELETE
+// CASCADE children of `module` in schema.sql. Three code paths must
+// each cover EVERY table here — ReplaceModule and DeleteModule (their
+// explicit per-module deletes; see ReplaceModule's doc for why the
+// cascade is not trusted) and sweepOrphanedModuleRows (boot-time
+// repair). A table added to schema.sql with `REFERENCES module(name)
+// ON DELETE CASCADE` gets an entry here and all three follow; missing
+// one reintroduces the orphaned-rows corruption this list exists to
+// prevent. TestModuleChildTablesMatchSchema pins the parity.
+//
+// Every statement is a literal — no SQL is assembled from the table
+// name at runtime, so no gosec G202 suppression is needed.
+var moduleChildTables = []struct {
+	table          string
+	deleteByModule string // per-module delete, one ? = module name
+	countOrphans   string // rows whose module vanished
+	deleteOrphans  string
+}{
+	{
+		"symbol",
+		`DELETE FROM symbol WHERE module_name = ?`,
+		`SELECT count(*) FROM symbol WHERE module_name NOT IN (SELECT name FROM module)`,
+		`DELETE FROM symbol WHERE module_name NOT IN (SELECT name FROM module)`,
+	},
+	{
+		"notification_relationship",
+		`DELETE FROM notification_relationship WHERE module_name = ?`,
+		`SELECT count(*) FROM notification_relationship WHERE module_name NOT IN (SELECT name FROM module)`,
+		`DELETE FROM notification_relationship WHERE module_name NOT IN (SELECT name FROM module)`,
+	},
+	{
+		"notification_pair",
+		`DELETE FROM notification_pair WHERE module_name = ?`,
+		`SELECT count(*) FROM notification_pair WHERE module_name NOT IN (SELECT name FROM module)`,
+		`DELETE FROM notification_pair WHERE module_name NOT IN (SELECT name FROM module)`,
+	},
+}
+
 // sweepOrphanedModuleRows repairs a database that ran with
 // `foreign_keys` disabled on some connection (see dsnPragmas): rows in
 // the ON DELETE CASCADE children of `module` outlive the module they
@@ -263,32 +301,11 @@ func migrateAddIndexImplied(ctx context.Context, db *sql.DB) error {
 // that path — steady-state Open is read-only (see
 // TestOpenStampedDBIsWriteFree), so each table is counted first and the
 // DELETE only runs when there is damage to repair.
-// The SQL is spelled out per table rather than assembled from a table
-// name: dynamic SQL here buys nothing (the set is fixed and known at
-// compile time) and costs a gosec G202 suppression that would then have
-// to be trusted by every later reader.
 func sweepOrphanedModuleRows(ctx context.Context, db *sql.DB) error {
-	sweeps := []struct{ table, count, del string }{
-		{
-			"symbol",
-			`SELECT count(*) FROM symbol WHERE module_name NOT IN (SELECT name FROM module)`,
-			`DELETE FROM symbol WHERE module_name NOT IN (SELECT name FROM module)`,
-		},
-		{
-			"notification_relationship",
-			`SELECT count(*) FROM notification_relationship WHERE module_name NOT IN (SELECT name FROM module)`,
-			`DELETE FROM notification_relationship WHERE module_name NOT IN (SELECT name FROM module)`,
-		},
-		{
-			"notification_pair",
-			`SELECT count(*) FROM notification_pair WHERE module_name NOT IN (SELECT name FROM module)`,
-			`DELETE FROM notification_pair WHERE module_name NOT IN (SELECT name FROM module)`,
-		},
-	}
 	swept := false
-	for _, s := range sweeps {
+	for _, s := range moduleChildTables {
 		var n int64
-		if err := db.QueryRowContext(ctx, s.count).Scan(&n); err != nil {
+		if err := db.QueryRowContext(ctx, s.countOrphans).Scan(&n); err != nil {
 			return fmt.Errorf("count orphans in %s: %w", s.table, err)
 		}
 		if n == 0 {
@@ -296,7 +313,7 @@ func sweepOrphanedModuleRows(ctx context.Context, db *sql.DB) error {
 		}
 		slog.Warn("removing rows orphaned by a missed FK cascade",
 			"table", s.table, "rows", n)
-		if _, err := db.ExecContext(ctx, s.del); err != nil {
+		if _, err := db.ExecContext(ctx, s.deleteOrphans); err != nil {
 			return fmt.Errorf("sweep %s: %w", s.table, err)
 		}
 		swept = true
@@ -433,9 +450,18 @@ func OpenInMemory(ctx context.Context) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 // ReplaceModule atomically replaces a module's data in a single
-// transaction: the old module rows are removed (cascading to symbols
-// via FK), the new rows are written, and the module's outgoing
-// cross-references and diagnostics are rewritten.
+// transaction: the old module rows are removed, the new rows are
+// written, and the module's outgoing cross-references and diagnostics
+// are rewritten.
+//
+// Every child table is deleted EXPLICITLY rather than left to the
+// ON DELETE CASCADE. The cascade is still declared and still correct,
+// but making this operation depend on connection state that lives
+// outside the transaction has already cost one round of silent data
+// corruption: a connection that lost `foreign_keys` turned the delete
+// into a partial one, orphaning the module's symbols and breaking every
+// later re-import on UNIQUE (module_name, name). Deleting by name is
+// two extra statements and is correct regardless of PRAGMA state.
 //
 // References INTO this module from OTHER modules are unaffected because
 // they're keyed by qualified name, not by the symbol IDs that change
@@ -461,6 +487,13 @@ func (s *Store) ReplaceModule(
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM module WHERE name = ?`, mod.Name); err != nil {
 		return fmt.Errorf("delete old module: %w", err)
+	}
+	// The CASCADE children, deleted by name — see the doc comment and
+	// moduleChildTables.
+	for _, child := range moduleChildTables {
+		if _, err := tx.ExecContext(ctx, child.deleteByModule, mod.Name); err != nil {
+			return fmt.Errorf("delete old %s rows: %w", child.table, err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM module_import WHERE module_name = ?`, mod.Name,
@@ -558,7 +591,9 @@ func (s *Store) ReplaceModule(
 	// Intelligence). Best-effort enrichment computed from the symbols
 	// and refs we just inserted — a classifier fault must never abort a
 	// module's ingest (see classify's recover), and the rows were
-	// already cleared by the `DELETE FROM module` cascade above.
+	// already cleared by the explicit moduleChildTables deletes above
+	// (NOT by the FK cascade, which this function deliberately does not
+	// rely on).
 	if rels := classify(ctx, mod.Name, syms, refs); len(rels) > 0 {
 		if err := writeRelationships(ctx, tx, mod.Name, rels); err != nil {
 			return err
