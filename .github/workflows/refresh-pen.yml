@@ -21,9 +21,10 @@ on:
     # First day of January, April, July, October at 04:00 UTC.
     - cron: '0 4 1 1,4,7,10 *'
 
+# Least privilege at the top; the single job elevates to what it needs
+# (branch push + PR creation). A job-level block replaces this one.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 # Avoid races between manual + scheduled triggers — they'd otherwise
 # collide on the branch name and one push would fail.
@@ -37,7 +38,11 @@ jobs:
     # the upstream and the scheduled trigger would otherwise spam
     # failing runs in every fork.
     if: github.repository == 'no42-org/blittermib'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write       # push the refresh branch
+      pull-requests: write  # open the PR
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
@@ -50,6 +55,9 @@ jobs:
           # fall back to GITHUB_TOKEN (PR opens but CI must be kicked
           # manually).
           GH_TOKEN: ${{ secrets.PEN_REFRESH_PAT || secrets.GITHUB_TOKEN }}
+          # Interpolate context values via env, never into the script
+          # body itself.
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           if git diff --quiet -- internal/iana/pen.txt; then
@@ -58,7 +66,7 @@ jobs:
           fi
           # Append run_id so a same-day re-run doesn't collide on the
           # remote branch / PR head.
-          branch="chore/refresh-iana-pen-$(date -u +%Y%m%d)-${{ github.run_id }}"
+          branch="chore/refresh-iana-pen-$(date -u +%Y%m%d)-${RUN_ID}"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
@@ -72,7 +80,11 @@ jobs:
             printf '\n'
             printf 'Auto-refresh by .github/workflows/refresh-pen.yml.\n'
             printf '\n'
-            printf 'Assisted-by: ClaudeCode:claude-opus-4-7\n'
+            printf 'Assisted-by: ClaudeCode:claude-opus-4-8\n'
+            # Sign off as the identity that actually authors this
+            # commit — the bot — so the automated refresh satisfies the
+            # DCO rule CONTRIBUTING.md states for every commit.
+            printf 'Signed-off-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>\n'
           } > "$msg"
           git commit -F "$msg"
           rm -f "$msg"

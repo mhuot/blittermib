@@ -284,3 +284,81 @@ func TestNormalizeAccess(t *testing.T) {
 		}
 	}
 }
+
+func TestDedupeSymbols(t *testing.T) {
+	syms := []model.Symbol{
+		{ModuleName: "M", Name: "system", Kind: model.KindObjectIdentity, SourceLine: 10},
+		{ModuleName: "M", Name: "other", Kind: model.KindScalar, SourceLine: 20},
+		{ModuleName: "M", Name: "system", Kind: model.KindScalar, SourceLine: 30},
+		{ModuleName: "M", Name: "system", Kind: model.KindColumn, SourceLine: 40},
+	}
+	kept, dropped := DedupeSymbols(syms)
+
+	if len(kept) != 2 || kept[0].Name != "system" || kept[1].Name != "other" {
+		t.Fatalf("kept = %+v, want the first `system` and `other` in source order", kept)
+	}
+	// FIRST definition wins — the later ones are the ones dropped.
+	if kept[0].SourceLine != 10 || kept[0].Kind != model.KindObjectIdentity {
+		t.Errorf("kept `system` = line %d kind %q, want the line-10 object-identity",
+			kept[0].SourceLine, kept[0].Kind)
+	}
+	if len(dropped) != 2 {
+		t.Fatalf("dropped = %+v, want both later `system` definitions", dropped)
+	}
+	for _, d := range dropped {
+		if d.Name != "system" {
+			t.Errorf("dropped %q, want only `system`", d.Name)
+		}
+	}
+}
+
+// TestDedupeSymbolsSourceOrderBeatsSliceOrder pins the cross-kind case
+// (the A10 ACOS pattern): ToModel appends scalars before table columns,
+// so a column that appears EARLIER in the source file sits LATER in the
+// slice. Source position must win, not append order.
+func TestDedupeSymbolsSourceOrderBeatsSliceOrder(t *testing.T) {
+	syms := []model.Symbol{
+		{ModuleName: "M", Name: "foo", Kind: model.KindScalar, SourceLine: 50},
+		{ModuleName: "M", Name: "foo", Kind: model.KindColumn, SourceLine: 20},
+	}
+	kept, dropped := DedupeSymbols(syms)
+	if len(kept) != 1 || kept[0].SourceLine != 20 || kept[0].Kind != model.KindColumn {
+		t.Errorf("kept = %+v, want the line-20 column (earlier in source)", kept)
+	}
+	if len(dropped) != 1 || dropped[0].SourceLine != 50 {
+		t.Errorf("dropped = %+v, want the line-50 scalar", dropped)
+	}
+}
+
+// TestDedupeSymbolsMissingLineFallsBackToSliceOrder covers dumps where
+// smidump emits no line attribute (SourceLine 0, common in production):
+// with no source signal, the earlier slice entry wins; a positive line
+// always beats an unknown one.
+func TestDedupeSymbolsMissingLineFallsBackToSliceOrder(t *testing.T) {
+	kept, _ := DedupeSymbols([]model.Symbol{
+		{ModuleName: "M", Name: "a", Kind: model.KindObjectIdentity, OID: "1.2.1"},
+		{ModuleName: "M", Name: "a", Kind: model.KindScalar, OID: "1.2.2"},
+	})
+	if len(kept) != 1 || kept[0].OID != "1.2.1" {
+		t.Errorf("kept = %+v, want the first slice entry when no line info exists", kept)
+	}
+
+	kept, _ = DedupeSymbols([]model.Symbol{
+		{ModuleName: "M", Name: "b", Kind: model.KindObjectIdentity, SourceLine: 0},
+		{ModuleName: "M", Name: "b", Kind: model.KindScalar, SourceLine: 7},
+	})
+	if len(kept) != 1 || kept[0].SourceLine != 7 {
+		t.Errorf("kept = %+v, want the line-7 definition over the line-unknown one", kept)
+	}
+}
+
+func TestDedupeSymbolsLeavesCleanInputAlone(t *testing.T) {
+	syms := []model.Symbol{
+		{ModuleName: "M", Name: "a"},
+		{ModuleName: "M", Name: "b"},
+	}
+	kept, dropped := DedupeSymbols(syms)
+	if len(kept) != 2 || len(dropped) != 0 {
+		t.Errorf("kept=%d dropped=%d, want 2/0 on input with no duplicates", len(kept), len(dropped))
+	}
+}

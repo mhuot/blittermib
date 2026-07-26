@@ -176,6 +176,55 @@ func ToModel(smi *SMI) (*model.Module, []model.Symbol) {
 	return mod, syms
 }
 
+// DedupeSymbols drops symbols whose name repeats another in the same
+// module, keeping the definition that appears FIRST IN THE SOURCE FILE,
+// and returns the survivors plus the dropped duplicates.
+//
+// A descriptor must be unique within a MIB module, and `symbol` enforces
+// that with UNIQUE (module_name, name). Real vendor MIBs break the rule
+// anyway — usually by redefining a common descriptor like `system` or
+// `ifIndex` — and smidump passes both definitions through. Without this
+// pass the whole module fails to store on the duplicate insert, costing
+// every OTHER symbol in the file over one malformed definition. Keeping
+// one and reporting the rest degrades a broken MIB to a diagnostic
+// instead of a total loss.
+//
+// "First" is decided by SourceLine, not slice position: ToModel appends
+// by kind group (nodes, scalars, table columns, notifications, …), so
+// slice order says nothing about where a definition sits in the file —
+// a duplicate spanning two kinds (the A10 ACOS pattern: same name as a
+// scalar and a column) would otherwise be resolved by ToModel's loop
+// order. When line information is missing from the dump (SourceLine 0),
+// slice position is the only signal left and the earlier entry wins.
+func DedupeSymbols(syms []model.Symbol) (kept, dropped []model.Symbol) {
+	// winner[name] = index of the definition to keep: lowest positive
+	// SourceLine, falling back to earliest slice position.
+	winner := make(map[string]int, len(syms))
+	for i := range syms {
+		j, seen := winner[syms[i].Name]
+		if !seen {
+			winner[syms[i].Name] = i
+			continue
+		}
+		li, lj := syms[i].SourceLine, syms[j].SourceLine
+		if li > 0 && (lj <= 0 || li < lj) {
+			winner[syms[i].Name] = i
+		}
+	}
+	if len(winner) == len(syms) {
+		return syms, nil // no duplicates — the common case
+	}
+	kept = make([]model.Symbol, 0, len(winner))
+	for i := range syms {
+		if winner[syms[i].Name] == i {
+			kept = append(kept, syms[i])
+		} else {
+			dropped = append(dropped, syms[i])
+		}
+	}
+	return kept, dropped
+}
+
 func nodeToSymbol(moduleName string, n XMLNode, kind model.SymbolKind) model.Symbol {
 	sym := model.Symbol{
 		ModuleName:   moduleName,

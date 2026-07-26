@@ -90,7 +90,8 @@ func (s *Store) DeleteSourceFile(ctx context.Context, path string) error {
 
 // DeleteModule removes a module and its dependent rows — the
 // vanished-source counterpart to ReplaceModule, with the same
-// deletion set (symbols cascade via FK; FTS via triggers).
+// deletion set, deleted explicitly rather than via the FK cascade
+// (see ReplaceModule for why). FTS still follows via triggers.
 func (s *Store) DeleteModule(ctx context.Context, name string) error {
 	if name == "" {
 		return errors.New("DeleteModule: empty name")
@@ -100,12 +101,16 @@ func (s *Store) DeleteModule(ctx context.Context, name string) error {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	for _, q := range []string{
-		`DELETE FROM module WHERE name = ?`,
+	queries := []string{`DELETE FROM module WHERE name = ?`}
+	for _, child := range moduleChildTables {
+		queries = append(queries, child.deleteByModule)
+	}
+	queries = append(queries,
 		`DELETE FROM module_import WHERE module_name = ?`,
 		`DELETE FROM reference WHERE source_module = ?`,
 		`DELETE FROM diagnostic WHERE module_name = ?`,
-	} {
+	)
+	for _, q := range queries {
 		if _, err := tx.ExecContext(ctx, q, name); err != nil {
 			return fmt.Errorf("delete module %s: %w", name, err)
 		}
