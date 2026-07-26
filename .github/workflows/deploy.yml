@@ -14,6 +14,11 @@ concurrency:
   group: deploy-blittermib
   cancel-in-progress: false
 
+# Deploy only reads the repo to build and (re)start the container locally
+# on the self-hosted runner; it never writes back to GitHub.
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: [self-hosted, blittermib]
@@ -26,6 +31,8 @@ jobs:
           # Full history + tags so `git describe` yields a real version
           # (e.g. v0.15.1-3-gf321e42) instead of the compose `dev` default.
           fetch-depth: 0
+          # Deploy never pushes; don't leave the token in git config.
+          persist-credentials: false
 
       - name: Build and start container
         run: |

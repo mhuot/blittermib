@@ -12,6 +12,12 @@ rules:
       # break it. The job runs only on a schedule/dispatch, is fenced to
       # this repository, and never checks out untrusted code.
       - refresh-pen.yml
+      # sync-upstream.yml is the same case: it merges upstream/main and
+      # pushes the result (and tags) back to origin with the checkout
+      # token, so `persist-credentials: false` would break the push. It
+      # runs only on a schedule/dispatch, is fenced to this fork, and
+      # merges only from the trusted upstream remote.
+      - sync-upstream.yml
 
   superfluous-actions:
     ignore:
