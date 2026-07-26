@@ -2,8 +2,10 @@ package server
 
 import (
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 )
 
@@ -46,6 +48,7 @@ func withLogging(next http.Handler) http.Handler {
 			level = slog.LevelDebug
 		}
 		slog.Log(r.Context(), level, "http",
+			"ip", clientIP(r),
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rec.status,
@@ -53,6 +56,28 @@ func withLogging(next http.Handler) http.Handler {
 			"dur", time.Since(start),
 		)
 	})
+}
+
+// clientIP returns the originating client address. The app's only
+// ingress is the nginx-director reverse proxy, which sets X-Real-IP
+// (to $remote_addr) and appends to X-Forwarded-For; the service is
+// never exposed directly, so trusting those headers is safe here.
+// Falls back to the transport peer for direct/local requests.
+func clientIP(r *http.Request) string {
+	if ip := r.Header.Get("X-Real-IP"); ip != "" {
+		return ip
+	}
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		// The first hop is the original client; later entries are proxies.
+		if comma := strings.IndexByte(fwd, ','); comma >= 0 {
+			return strings.TrimSpace(fwd[:comma])
+		}
+		return strings.TrimSpace(fwd)
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 // withRecover catches panics from a downstream handler, logs the stack,
