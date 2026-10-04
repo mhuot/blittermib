@@ -44,7 +44,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/no42-org/blittermib.git
-          git fetch upstream main --tags
+          # --force: upstream re-cuts release tags; without it a moved tag aborts the whole sync.
+          git fetch upstream main --tags --force
           before="$(git rev-parse HEAD)"
           git merge --no-edit upstream/main
           after="$(git rev-parse HEAD)"
@@ -64,7 +65,8 @@ jobs:
         # Keep release tags on the fork so `git describe` (and thus the
         # deployed /version) stays accurate. Idempotent; runs even with no
         # new commits so a tag-only upstream release still propagates.
-        run: git push origin --tags
+        # --force so a re-cut upstream tag updates the fork's mirror instead of being rejected.
+        run: git push origin --tags --force
 
       - name: Trigger deploy
         if: steps.merge.outputs.changed == 'true'
